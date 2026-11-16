@@ -1,7 +1,8 @@
 # JO Telegram Watchdog production image.
 # The t6 dependency is a git URL (pyproject.toml), and the slim image has no git. The build
-# stage installs git and builds every wheel; the final stage installs from those wheels, so
-# the production image carries no git.
+# stage installs git and builds every wheel; the final stage installs those wheels, so the
+# production image carries no git. The wheels are installed by file with --no-deps: resolving
+# the git URL requirement again would need git. `pip check` then proves the set is complete.
 FROM python:3.12-slim AS build
 
 RUN apt-get update \
@@ -27,7 +28,8 @@ RUN groupadd --system --gid 1000 watchdog \
 WORKDIR /app
 
 COPY --from=build /wheels /wheels
-RUN pip install --no-index --find-links /wheels jo-watchdog \
+RUN pip install --no-index --no-deps /wheels/*.whl \
+    && pip check \
     && rm -rf /wheels \
     && mkdir -p /app/data \
     && chown watchdog:watchdog /app/data \
