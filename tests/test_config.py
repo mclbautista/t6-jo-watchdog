@@ -111,7 +111,6 @@ class ValidationTests(unittest.TestCase):
 
 
 LIVE = dict(
-    standing_cc_contact_page_id="c0000000-0000-4000-8000-0000000000cc",
     standing_cc_telegram_handle="@priya",
     owner_telegram_handle="@cyril_owner",
 )
@@ -124,14 +123,13 @@ def live(**overrides) -> Config:
 class ProductionReadinessTests(unittest.TestCase):
     def test_valid_configuration_boots(self):
         require_live_keys(live())
-        require_live_keys(live(standing_cc_contact_page_id="c00000000000400080000000000000cc"))
 
     def test_negative_group_chat_ids_are_legitimate(self):
         require_live_keys(live(intake_chat_id=-1001234567890, ops_chat_id=-4242))
 
     def test_audited_invalid_values_are_rejected(self):
         bad = {
-            "standing_cc_contact_page_id": ["", "short"],
+            "standing_cc_telegram_handle": [""],
             "intake_topic_id": [-5],
             "ops_topic_id": [-1],
             "llm_model_hint": ["", "  "],
@@ -146,11 +144,10 @@ class ProductionReadinessTests(unittest.TestCase):
 
     def test_all_problems_are_reported_without_values(self):
         with self.assertRaises(ValueError) as ctx:
-            require_live_keys(live(intake_topic_id=-7, standing_cc_contact_page_id="secret-looking-value"))
+            require_live_keys(live(intake_topic_id=-7, ledger_path="  "))
         message = str(ctx.exception)
         self.assertIn("intake_topic_id", message)
-        self.assertIn("standing_cc_contact_page_id", message)
-        self.assertNotIn("secret-looking-value", message)
+        self.assertIn("ledger_path", message)
 
     def test_placeholders_are_distinct_from_readiness(self):
         example = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
@@ -161,7 +158,6 @@ class ProductionReadinessTests(unittest.TestCase):
             {
                 "intake_chat_id",
                 "ops_chat_id",
-                "standing_cc_contact_page_id",
                 "standing_cc_telegram_handle",
                 "owner_telegram_handle",
             },
@@ -177,7 +173,7 @@ class RemovedKeyTests(unittest.TestCase):
             config = load_config(self.OLD_EXAMPLE)
         text = "\n".join(logs.output)
         for key in ("job_orders_data_source_id", "notion_version", "deepseek_model", "jev_url",
-                    "fuzzy_min_score", "honorifics"):
+                    "fuzzy_min_score", "honorifics", "standing_cc_contact_page_id"):
             self.assertIn(key, text)
         self.assertEqual(len(logs.records), 1)  # one line for all the removed keys
         self.assertEqual(config.intake_topic_id, 2)
@@ -246,6 +242,6 @@ class RenamedKeysTests(unittest.TestCase):
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 config = load_config(path)
-        self.assertEqual(config.standing_cc_contact_page_id, "c0000000-0000-4000-8000-0000000000cc")
+        self.assertFalse(hasattr(config, "standing_cc_contact_page_id"))  # removed: ignored
         self.assertEqual(config.standing_cc_telegram_handle, "@priya")
-        self.assertEqual(len([w for w in caught if issubclass(w.category, DeprecationWarning)]), 2)
+        self.assertEqual(len([w for w in caught if issubclass(w.category, DeprecationWarning)]), 1)

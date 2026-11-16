@@ -98,8 +98,9 @@ seams. The real-account checks live in `smoke.py` and are run by hand.
    Departments, raises and finds Job Orders, and runs extraction and Deliverable
    matching through it. That key needs the `unmasked` and `llm` grants and the Job
    Order raise permission, or names come back masked and resolution fails.
-5. Fill `standing_cc_contact_page_id` (Priya's page in Contacts),
-   `standing_cc_telegram_handle` and `owner_telegram_handle`.
+5. Fill `standing_cc_telegram_handle` (the handle the capture report tags) and
+   `owner_telegram_handle`. The standing cc on every Job Order is added by the API:
+   set `T6_STANDING_CC` there before this version runs.
 6. Prepare a local data directory and run the smoke check until it passes (the
    container does not use this directory; it keeps its ledger in a named volume):
 

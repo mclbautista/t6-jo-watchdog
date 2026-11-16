@@ -42,7 +42,7 @@ filter_drops: false
 raise_poll_seconds: 60              # how long to wait for the page of a raised Job Order
 
 # --- Resolution and caches (#22) ---
-standing_cc_contact_page_id: "00000000-0000-0000-0000-000000000000"  # FILL IN: Contacts page id of the standing cc on every JO
+# The standing cc on every Job Order is added by the t6 API (T6_STANDING_CC there).
 cache_refresh_hours: 6
 cache_stale_alert_hours: 24
 

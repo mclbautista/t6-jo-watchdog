@@ -58,7 +58,7 @@ A failed refresh writes nothing to `cache_snapshot`; its time and error are logg
 
 ### Configuration
 
-`contacts_data_source_id`, `projects_data_source_id`, `standing_cc_contact_page_id`, `cache_refresh_hours` (6), `cache_stale_alert_hours` (24), `fuzzy_min_score` (90), `fuzzy_min_lead` (8), `department_aliases` (map, e.g. `TO: TOC`), `honorifics` (`ate`, `kuya`, `sir`).
+`contacts_data_source_id`, `projects_data_source_id`, `cache_refresh_hours` (6), `cache_stale_alert_hours` (24), `fuzzy_min_score` (90), `fuzzy_min_lead` (8), `department_aliases` (map, e.g. `TO: TOC`), `honorifics` (`ate`, `kuya`, `sir`).
 
 ## Blocked by
 

@@ -44,7 +44,7 @@ Every key below is validated at startup; a bad value fails the boot.
 | `intake_chat_id`, `intake_topic_id`, `captured_reaction`, `poll_timeout`, `poll_interval`, `job_orders_data_source_id`, `notion_version`, `ledger_path` | as today | #18 |
 | `deepseek_base_url`, `deepseek_model`, `deepseek_timeout_seconds` | `https://api.deepseek.com`, latest alias, 60 | #20 |
 | `department_aliases` | `{TO: TOC}` | #21 |
-| `contacts_data_source_id`, `projects_data_source_id`, `standing_cc_contact_page_id`, `cache_refresh_hours`, `cache_stale_alert_hours`, `fuzzy_min_score`, `fuzzy_min_lead`, `honorifics` | —, —, —, 6, 24, 90, 8, `[ate, kuya, sir]` | #22 |
+| `contacts_data_source_id`, `projects_data_source_id`, `cache_refresh_hours`, `cache_stale_alert_hours`, `fuzzy_min_score`, `fuzzy_min_lead`, `honorifics` | —, —, 6, 24, 90, 8, `[ate, kuya, sir]` | #22 |
 | `ops_chat_id`, `ops_topic_id`, `standing_cc_telegram_handle`, `header_date_tolerance_days` | —, —, —, 1 | #23 |
 | `owner_telegram_handle`, `retry_schedule_seconds`, `deadman_stale_minutes`, `heartbeat_time`, `timezone` | —, `[30,120,300,600]`, 10, `07:00`, `Asia/Manila` | #25 |
 | `deliverables_data_source_id`, `jev_url`, `jev_model`, `jev_timeout_seconds`, `t_link`, `t_hint`, `deliverable_link_enabled` | —, `https://openrouter.ai/api/alpha/decisions`, `~typesafe/jev-latest`, 30, 0.90, 0.50, false | #26 |

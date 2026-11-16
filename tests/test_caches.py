@@ -21,7 +21,6 @@ from tests.fakes import (
     update,
 )
 
-PRIYA = "c0000000-0000-4000-8000-000000000001"
 
 
 def config(**overrides) -> Config:
@@ -30,7 +29,6 @@ def config(**overrides) -> Config:
         intake_topic_id=5,
         ops_chat_id=-100999,
         ops_topic_id=7,
-        standing_cc_contact_page_id=PRIYA,
     )
     values.update(overrides)
     return Config(**values)
@@ -116,7 +114,7 @@ class RefreshTests(CacheTestCase):
         }
         people = await caches.resolve_people("Ramon / @user_two", None)
         self.assertEqual(len(people.assigned), 2)
-        self.assertEqual(people.cc, [PRIYA])
+        self.assertEqual(people.cc, [])  # the API adds the standing cc
         self.matcher.projects = {"mfg - toc": project("proj-mfg", "MFG")}
         self.assertEqual((await caches.resolve_project("MFG - TOC", None)).code, "MFG")
 

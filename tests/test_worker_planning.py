@@ -88,7 +88,6 @@ class Harness:
             intake_topic_id=5,
             ops_chat_id=-100999,
             ops_topic_id=7,
-            standing_cc_contact_page_id=PRIYA,
         )
         self.notion = FakeJobOrders(departments=departments, deadlines=DEADLINES)
         self.telegram = FakeTelegram(
@@ -141,7 +140,7 @@ class PlannerWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(props["Department"], {"select": {"name": "TOC"}})
         self.assertEqual(props["Projects"], {"relation": [{"id": "proj-mfg"}]})
         self.assertEqual(props["Assigned"], {"relation": [{"id": "c-ben"}]})
-        self.assertEqual(props["cc"], {"relation": [{"id": "c-ana"}, {"id": PRIYA}]})
+        self.assertEqual(props["cc"], {"relation": [{"id": "c-ana"}]})
         self.assertEqual(props["Deadline"]["date"]["start"], "2026-09-30T22:00:00+08:00")
         # The API read Benjamin's End of Shift: it was sent his T6 Person ID, not a time.
         self.assertEqual(h.notion.previews[-1].message.assignees, ["t6n_ben"])
@@ -153,7 +152,7 @@ class PlannerWiringTests(unittest.IsolatedAsyncioTestCase):
                 "project_page_id": "proj-mfg",
                 "department": "TOC",
                 "assigned": ["c-ben"],
-                "cc": ["c-ana", PRIYA],
+                "cc": ["c-ana"],
                 "unresolved": [],
             },
         )

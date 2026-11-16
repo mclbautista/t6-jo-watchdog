@@ -30,21 +30,13 @@ from pydantic import (
     model_validator,
 )
 
-from jo_watchdog.core.resolve import ResolveSettings
-
 _HANDLE_RE = re.compile(r"^@?[A-Za-z0-9_]{5,32}$")
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-_NOTION_ID_RE = re.compile(
-    r"^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
-)
 
-# Notion ids a live service must hold real, well-formed values for.
-_NOTION_ID_KEYS = ("standing_cc_contact_page_id",)
 _NON_EMPTY_KEYS = ("llm_model_hint", "ledger_path")
 
 # Keys the running service cannot do without; checked by ``require_live_keys``.
 LIVE_REQUIRED_KEYS = (
-    "standing_cc_contact_page_id",
     "standing_cc_telegram_handle",
     "owner_telegram_handle",
 )
@@ -115,7 +107,6 @@ class Config(BaseModel):
     filter_drops: bool = False
 
     # Live resolution caches (#22)
-    standing_cc_contact_page_id: str | None = None
     cache_refresh_hours: float = Field(default=6, gt=0)
     cache_stale_alert_hours: float = Field(default=24, gt=0)
 
@@ -215,13 +206,6 @@ class Config(BaseModel):
         return self
 
 
-def resolve_settings(config: Config) -> ResolveSettings:
-    """The pure resolver's knobs, taken from the validated config."""
-    return ResolveSettings(
-        standing_cc_contact_page_id=config.standing_cc_contact_page_id,
-    )
-
-
 def _production_problems(config: Config) -> list[str]:
     """Why ``config`` is not fit to boot against live providers.
 
@@ -232,12 +216,6 @@ def _production_problems(config: Config) -> list[str]:
         for key in LIVE_REQUIRED_KEYS
         if getattr(config, key) in (None, "", 0)
     ]
-    for key in _NOTION_ID_KEYS:
-        value = getattr(config, key)
-        if value and not _NOTION_ID_RE.match(value.strip()):
-            problems.append(f"{key} is not a Notion id (32 hex characters, dashes optional)")
-        elif not value and key not in LIVE_REQUIRED_KEYS:
-            problems.append(f"{key} must not be empty")
     for key in _NON_EMPTY_KEYS:
         if not getattr(config, key).strip():
             problems.append(f"{key} must not be empty")
@@ -263,8 +241,8 @@ def require_live_keys(config: Config) -> None:
 def placeholder_keys(config: Config) -> list[str]:
     """Keys still holding the example file's FILL IN values (not production-ready)."""
     placeholders = []
-    for key in ("standing_cc_contact_page_id", "standing_cc_telegram_handle", "owner_telegram_handle"):
-        if str(getattr(config, key)).startswith(("00000000", "@standing_cc_handle", "@owner_handle")):
+    for key in ("standing_cc_telegram_handle", "owner_telegram_handle"):
+        if str(getattr(config, key)).startswith(("@standing_cc_handle", "@owner_handle")):
             placeholders.append(key)
     if config.intake_chat_id == -1000000000000:
         placeholders.append("intake_chat_id")
@@ -275,7 +253,6 @@ def placeholder_keys(config: Config) -> list[str]:
 
 # Keys renamed to role names (the standing cc person). Old files still load, with a warning.
 _RENAMED_KEYS = {
-    "leizette_contact_page_id": "standing_cc_contact_page_id",
     "leizette_telegram_handle": "standing_cc_telegram_handle",
 }
 
@@ -298,6 +275,9 @@ REMOVED_KEYS = frozenset(
         "fuzzy_min_score",
         "fuzzy_min_lead",
         "honorifics",
+        # The API adds the standing cc (``T6_STANDING_CC``); the old name of the key is ignored too.
+        "standing_cc_contact_page_id",
+        "leizette_contact_page_id",
     }
 )
 

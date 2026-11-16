@@ -56,12 +56,6 @@ class Finding(BaseModel):
     params: dict[str, str] = Field(default_factory=dict)
 
 
-class ResolveSettings(BaseModel):
-    """The resolution knobs from config."""
-
-    standing_cc_contact_page_id: str | None = None
-
-
 class MentionEntity(BaseModel):
     """A Telegram ``mention`` or ``text_mention`` entity from the message.
 
@@ -340,12 +334,10 @@ def _add_unique(ids: list[str], page_id: str) -> None:
         ids.append(page_id)
 
 
-def people_resolution(
-    results: Sequence[MentionResult], settings: ResolveSettings
-) -> PeopleResolution:
+def people_resolution(results: Sequence[MentionResult]) -> PeopleResolution:
     """Assigned and cc from the mention results.
 
-    The standing cc is always in cc; Coordinator stays blank.
+    The standing cc is not added here: ``jo raise`` adds it (``T6_STANDING_CC`` on the API).
     """
     out = PeopleResolution()
     for result in results:
@@ -366,9 +358,6 @@ def people_resolution(
                         params={"raw": result.raw, "contact": result.contact_name or ""},
                     )
                 )
-
-    if settings.standing_cc_contact_page_id:
-        _add_unique(out.cc, settings.standing_cc_contact_page_id)
     return out
 
 

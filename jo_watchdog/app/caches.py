@@ -22,7 +22,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from jo_watchdog.adapters.protocols import DirectoryReader, Matcher
-from jo_watchdog.app.config import Config, resolve_settings
+from jo_watchdog.app.config import Config
 from jo_watchdog.core.resolve import (
     MentionEntity,
     PeopleResolution,
@@ -150,7 +150,6 @@ class CacheManager:
         self.directory = directory
         self.matcher = matcher
         self.config = config
-        self.settings = resolve_settings(config)
         self.clock = clock
         self.people: list[Person] | None = None
         self.projects: list[ProjectEntry] | None = None
@@ -265,7 +264,7 @@ class CacheManager:
             )
             for m in mentions
         ]
-        return people_resolution(merge_leads(mentions, groups), self.settings)
+        return people_resolution(merge_leads(mentions, groups))
 
     def contact_for_telegram_user(self, user_id: int | None, username: str | None) -> str | None:
         """The one Contact whose TelegramUserID or TelegramHandle matches, else None.

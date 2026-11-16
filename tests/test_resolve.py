@@ -19,7 +19,6 @@ from jo_watchdog.core.resolve import (
     PeopleResolution,
     ProjectMatch,
     ProjectResolution,
-    ResolveSettings,
     relation_properties,
     resolve_project,
     split_mentions,
@@ -58,9 +57,6 @@ def projects():
     return [project_from_page(p) for p in _load("projects_query.json")["results"]]
 
 
-SETTINGS = ResolveSettings(standing_cc_contact_page_id=PRIYA)
-
-
 ANSWERS = {
     "Ramon": resolved(RAMON, "Ramon Reyes"),
     "Lena": resolved(LENA, "Lena Cruz"),
@@ -93,7 +89,6 @@ class ResolvedBy(unittest.IsolatedAsyncioTestCase):
             intake_topic_id=5,
             ops_chat_id=-100999,
             ops_topic_id=7,
-            standing_cc_contact_page_id=PRIYA,
         )
         self.caches = CacheManager(
             ledger=self.ledger, directory=None, matcher=self.matcher, config=config
@@ -178,7 +173,7 @@ class PeopleResolutionTests(ResolvedBy):
     async def test_no_mentions_make_no_call(self):
         out = await self.resolve(None, "")
         self.assertEqual(self.matcher.calls, [])
-        self.assertEqual(out.cc, [PRIYA])
+        self.assertEqual(out.cc, [])
 
     async def test_a_text_mention_entity_asks_by_telegram_user_id(self):
         entity = MentionEntity(text="Jadey", user_id="5550001")
@@ -234,7 +229,7 @@ class PeopleResolutionTests(ResolvedBy):
         out = await self.resolve("Lena if available", "Mira kung free")
         self.assertEqual(self.matcher.calls, [])
         self.assertEqual(out.assigned, [])
-        self.assertEqual(out.cc, [PRIYA])
+        self.assertEqual(out.cc, [])
         self.assertEqual(
             [(m.raw, m.status) for m in out.mentions],
             [("Lena if available", "ambiguous"), ("Mira kung free", "ambiguous")],
@@ -287,10 +282,9 @@ class PeopleResolutionTests(ResolvedBy):
         out = await self.resolve("@user_eight")
         self.assertEqual(out.assignee_ids, [])
 
-    async def test_no_standing_cc_config_means_no_standing_cc(self):
-        self.caches.settings = ResolveSettings()
+    async def test_the_watchdog_adds_no_standing_cc(self):
         out = await self.resolve("Ramon")
-        self.assertEqual(out.cc, [])
+        self.assertEqual(out.cc, [])  # ``jo raise`` adds it (T6_STANDING_CC on the API)
 
     async def test_when_the_api_cannot_answer_nothing_is_resolved(self):
         self.matcher.down = True
@@ -386,18 +380,17 @@ class RelationPropertyTests(unittest.TestCase):
 
 
 class CorpusPeopleTests(ResolvedBy):
-    """Every corpus JO resolves without error; Priya is always in cc."""
+    """Every corpus JO resolves without error."""
 
     ASSIGNED_RE = re.compile(r"^\s*assigned(?: to)?\s*:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
     CC_RE = re.compile(r"^\s*cc\s*:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 
-    async def test_every_jo_resolves_and_keeps_standing_cc(self):
+    async def test_every_jo_resolves(self):
         corpus = json.loads((FIXTURES / "redacted_corpus.json").read_text(encoding="utf-8"))
         for i, text in enumerate(corpus):
             a = self.ASSIGNED_RE.search(text)
             c = self.CC_RE.search(text)
             out = await self.resolve(a.group(1) if a else None, c.group(1) if c else None)
-            self.assertIn(PRIYA, out.cc, i)
             self.assertEqual(len(out.assigned), len(set(out.assigned)), i)
             for mention in out.mentions:
                 if mention.status != "resolved":
