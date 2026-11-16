@@ -424,7 +424,7 @@
   },
   {
    "id": "corpus-74",
-   "input": "PP EP 2 (APC) - TOC - #0004\nAugust 17 / Monday\n\nTitle: Show Juliet EP 2: A Perfect Christmas\nTask: dl EXR files from kuya ogie, zip per EXR file and upload to frame io (yung VFX na folder sa show juliet project sa fio)\n\nPurpose: for turnover of VFX files to bb\nMode of Transfer: frame.io, me na mag generate ng link\n\nSource material: \n\nPaskong Pinoy from Kuya Ogie\nLink: [LINK]\nPW: [password withheld – see Telegram message]\n\nDeadline: August 17, 11AM if keri\nStatus as of 11am: \nPending:\n\nAssigned: for @user_two / Ramon kung sino man ang walang gawaa thank you!\n\ncc: @priya",
+   "input": "PP EP 2 (APC) - TOC - #0004\nAugust 17 / Monday\n\nTitle: Show Juliet EP 2: A Perfect Christmas\nTask: dl EXR files from kuya ogie, zip per EXR file and upload to frame io (yung VFX na folder sa show juliet project sa fio)\n\nPurpose: for turnover of VFX files to bb\nMode of Transfer: frame.io, me na mag generate ng link\n\nSource material: \n\nShow Juliet from Kuya Ogie\nLink: [LINK]\nPW: [password withheld – see Telegram message]\n\nDeadline: August 17, 11AM if keri\nStatus as of 11am: \nPending:\n\nAssigned: for @user_two / Ramon kung sino man ang walang gawaa thank you!\n\ncc: @priya",
    "output": {
     "verdict": "jo",
     "confidence": "high",
