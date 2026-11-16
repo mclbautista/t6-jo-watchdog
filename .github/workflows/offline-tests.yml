@@ -21,3 +21,10 @@ jobs:
       - run: python -m pytest -q
         env:
           LOGNAME: staging
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --platform linux/amd64 -t jo-watchdog:ci .
+      - run: docker run --rm --entrypoint python jo-watchdog:ci -c "import jo_watchdog.app, t6.client"
