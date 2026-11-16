@@ -35,8 +35,8 @@ def make(**overrides) -> Config:
 class DefaultsTests(unittest.TestCase):
     def test_reference_defaults(self):
         config = make()
-        self.assertEqual(config.deepseek_base_url, "https://api.deepseek.com")
-        self.assertEqual(config.deepseek_timeout_seconds, 60)
+        self.assertEqual(config.llm_model_hint, "deepseek-chat")
+        self.assertEqual(config.llm_timeout_seconds, 70)
         self.assertEqual(config.department_aliases, {"TO": "TOC"})
         self.assertEqual(config.cache_refresh_hours, 6)
         self.assertEqual(config.cache_stale_alert_hours, 24)
@@ -72,6 +72,10 @@ class ValidationTests(unittest.TestCase):
             {"fuzzy_min_score": 90},  # removed with the Contact resolver (#144)
             {"fuzzy_min_lead": 8},
             {"honorifics": ["ate"]},
+            {"llm_timeout_seconds": 60},  # the API waits up to 60 s for the provider
+            {"deepseek_base_url": "x"},  # removed with the DeepSeek client
+            {"deepseek_model": "x"},
+            {"deepseek_timeout_seconds": 60},
             {"cache_refresh_hours": 0},
             {"cache_refresh_hours": 30, "cache_stale_alert_hours": 24},
             {"owner_telegram_handle": "has space"},
@@ -112,7 +116,7 @@ class ProductionReadinessTests(unittest.TestCase):
     def test_valid_configuration_boots(self):
         require_live_keys(live())
         require_live_keys(live(standing_cc_contact_page_id="c00000000000400080000000000000cc"))
-        require_live_keys(live(deepseek_base_url="http://localhost:8080"))
+        require_live_keys(live(jev_url="http://localhost:8080"))
         require_live_keys(live(notion_version="2027-01-31"))
 
     def test_negative_group_chat_ids_are_legitimate(self):
@@ -127,9 +131,8 @@ class ProductionReadinessTests(unittest.TestCase):
             "standing_cc_contact_page_id": ["", "short"],
             "intake_topic_id": [-5],
             "ops_topic_id": [-1],
-            "deepseek_base_url": ["", "ftp://x.example", "api.deepseek.com", "https://"],
-            "jev_url": ["", "file:///etc/passwd"],
-            "deepseek_model": ["", "  "],
+            "jev_url": ["", "ftp://x.example", "openrouter.ai/api", "https://", "file:///etc/passwd"],
+            "llm_model_hint": ["", "  "],
             "jev_model": [""],
             "ledger_path": ["", " "],
             "notion_version": ["", "latest", "2026-3-1"],

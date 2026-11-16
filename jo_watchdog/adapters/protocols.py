@@ -168,9 +168,9 @@ class Matcher(ContactMatcher, ProjectMatcher, Protocol):
 
 @runtime_checkable
 class Classifier(Protocol):
-    async def classify(
-        self, masked_text: str, origin_lines: list[str] | None
-    ) -> ClassifyResult: ...
+    async def classify(self, text: str, origin_lines: list[str] | None) -> ClassifyResult:
+        """Extract one message. The t6 API masks names and credentials; ``text`` is as posted."""
+        ...
 
 
 @runtime_checkable

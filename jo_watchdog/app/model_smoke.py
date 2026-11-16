@@ -1,11 +1,10 @@
-"""Typed-model smoke checks for DeepSeek and Jev (#61).
+"""Typed-model smoke checks for extraction (the t6 API's ``llm run``) and Jev (#61).
 
 ``smoke.py`` is manual and calls these against the live providers; the offline
-tests call the same functions over ``httpx.MockTransport``. Both go through the
-production adapters, so a response is judged by the same validation the worker
-uses. A transport that records requests and response headers sits underneath, so
-what is reported (request count, masked text, rate-limit headers) is observed,
-not assumed.
+tests call the same functions over a fake client or ``httpx.MockTransport``. Both go
+through the production adapters, so a response is judged by the same validation the
+worker uses. A recorder sits underneath, so what is reported (request count,
+rate-limit headers) is observed, not assumed.
 
 Nothing here claims a live 429 unless one came back, and a live call needs the
 explicit authorization that ``smoke.py`` documents.
@@ -19,11 +18,10 @@ from pathlib import Path
 
 import httpx
 
-from jo_watchdog.adapters.deepseek import DeepSeekClassifier
 from jo_watchdog.adapters.jev import CRITERIA, JevMatcher, MatcherError
+from jo_watchdog.adapters.t6llm import T6LlmClassifier
 from jo_watchdog.app.smoke_gate import FAIL, MANUAL, PASS, Result
-from jo_watchdog.core.extraction import Extraction
-from jo_watchdog.core.masker import WITHHELD, outbound_text
+from jo_watchdog.core.masker import outbound_text
 from jo_watchdog.core.matching import Candidate, decide
 
 # The three fixed regression pairs, in request order (tests/fixtures/jev/regression_pairs.json).
@@ -59,89 +57,64 @@ class RecordingTransport(httpx.AsyncBaseTransport):
         await self._inner.aclose()
 
 
-def _request_text(body: dict) -> str:
-    """The Job Order text sent: the last message (the system prompt is fixed wording)."""
-    messages = body.get("messages") or [{}]
-    return str(messages[-1].get("content", ""))
-
-
 def _fail(lines: list[str], detail: str, sent: int) -> ModelCheck:
     return ModelCheck(Result(FAIL, detail), lines, sent)
 
 
-# -- DeepSeek ---------------------------------------------------------------------
+# -- Extraction through llm run -------------------------------------------------------
 
 
-async def check_deepseek(
-    api_key: str,
-    *,
-    base_url: str,
-    model: str,
-    timeout: float,
-    inner: httpx.AsyncBaseTransport | None = None,
-) -> ModelCheck:
-    """One masked-credential call and one no-mask call through ``DeepSeekClassifier``.
+class RecordingClient:
+    """Wraps a ``t6.client.Client`` and keeps each ``llm run`` request it sends."""
 
-    The positive case proves a supported credential is withheld from the outbound
-    request; the no-mask case proves ordinary text is sent unchanged. Each reply
-    must be a validated ``Extraction`` with the returned model and token counts.
+    def __init__(self, inner):
+        self._inner = inner
+        self.requests: list = []
+
+    def llm_run(self, inputs):
+        self.requests.append(inputs)
+        return self._inner.llm_run(inputs)
+
+
+async def check_extraction(client, *, model_hint: str, timeout: float) -> ModelCheck:
+    """One text with a credential and one without, through ``T6LlmClassifier``.
+
+    The API masks the input, so the credential is sent as posted: the check is that the
+    reply carries it nowhere. Each reply must be a validated ``Extraction`` with the returned
+    model and token counts, and each case must cost exactly one request.
     """
-    recorder = RecordingTransport(inner)
-    classifier = DeepSeekClassifier(
-        api_key,
-        base_url=base_url,
-        model=model,
-        timeout_seconds=timeout,
-        client=httpx.AsyncClient(
-            base_url=base_url,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=timeout,
-            transport=recorder,
-        ),
-    )
+    recorder = RecordingClient(client)
+    classifier = T6LlmClassifier(recorder, model_hint=model_hint, timeout_seconds=timeout)
     lines: list[str] = []
     problems: list[str] = []
     verdicts: list[str] = []
-    try:
-        for label, raw, masked_expected in (
-            ("mask positive", MASK_POSITIVE, True),
-            ("no mask", MASK_NEGATIVE, False),
-        ):
-            masked = outbound_text(raw)
-            if bool(masked.withheld_count) != masked_expected:
-                problems.append(f"{label}: masker withheld {masked.withheld_count} value(s)")
-            before = len(recorder.requests)
-            result = await classifier.classify(masked.text, [])
-            if len(recorder.requests) != before + 1:
-                saw = len(recorder.requests) - before
-                problems.append(f"{label}: expected one request, saw {saw}")
-                continue
-            sent = _request_text(recorder.requests[-1])
-            if masked_expected and (
-                SECRET in json.dumps(recorder.requests[-1]) or WITHHELD not in sent
-            ):
-                problems.append(f"{label}: request did not withhold the credential")
-            if not masked_expected and (WITHHELD in sent or "for grading" not in sent):
-                problems.append(f"{label}: request altered text with no credential")
-            if result.extraction is None:
-                problems.append(f"{label}: {result.outcome}: {result.error}")
-                continue
-            if not isinstance(result.extraction, Extraction):
-                problems.append(f"{label}: reply is not a validated Extraction")
-            if result.requested_model != model:
-                problems.append(f"{label}: requested model {result.requested_model!r}")
-            if not result.returned_model:
-                problems.append(f"{label}: no returned model snapshot")
-            if result.input_tokens is None or result.output_tokens is None:
-                problems.append(f"{label}: token counts missing")
-            verdicts.append(result.extraction.verdict)
-            lines.append(
-                f"{label}: model {result.returned_model}; tokens "
-                f"{result.input_tokens}/{result.output_tokens}; {result.latency_ms} ms; "
-                f"verdict {result.extraction.verdict}"
-            )
-    finally:
-        await classifier.close()
+    for label, raw, has_secret in (
+        ("mask positive", MASK_POSITIVE, True),
+        ("no mask", MASK_NEGATIVE, False),
+    ):
+        before = len(recorder.requests)
+        result = await classifier.classify(raw, [])
+        if len(recorder.requests) != before + 1:
+            saw = len(recorder.requests) - before
+            problems.append(f"{label}: expected one request, saw {saw}")
+            continue
+        if result.extraction is None:
+            problems.append(f"{label}: {result.outcome}: {result.error}")
+            continue
+        if has_secret and SECRET in result.extraction.model_dump_json():
+            problems.append(f"{label}: the reply carries the credential")
+        if result.requested_model != model_hint:
+            problems.append(f"{label}: requested model {result.requested_model!r}")
+        if not result.returned_model:
+            problems.append(f"{label}: no returned model snapshot")
+        if result.input_tokens is None or result.output_tokens is None:
+            problems.append(f"{label}: token counts missing")
+        verdicts.append(result.extraction.verdict)
+        lines.append(
+            f"{label}: model {result.returned_model}; tokens "
+            f"{result.input_tokens}/{result.output_tokens}; {result.latency_ms} ms; "
+            f"verdict {result.extraction.verdict}"
+        )
     sent_count = len(recorder.requests)
     if problems:
         return _fail(lines, "; ".join(problems), sent_count)
@@ -149,7 +122,7 @@ async def check_deepseek(
         detail = f"structured output valid but verdicts were {verdicts}; review the model"
         return ModelCheck(Result(MANUAL, detail), lines, sent_count)
     return ModelCheck(
-        Result(PASS, "structured output, snapshot and tokens; mask positive and no-mask cases"),
+        Result(PASS, "structured output, snapshot and tokens; credential and no-credential cases"),
         lines,
         sent_count,
     )

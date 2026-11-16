@@ -13,7 +13,6 @@ from dataclasses import dataclass, field, replace
 from jo_watchdog.app.caches import CacheManager
 from jo_watchdog.app.config import (
     Config,
-    deepseek_token,
     gateway_secret,
     notion_token,
     openrouter_token,
@@ -46,21 +45,20 @@ class Adapters:
 
 
 def build_adapters(config: Config) -> Adapters:
-    """The real aiogram, httpx, t6 API, DeepSeek and Jev adapters, from the environment."""
+    """The real aiogram, httpx and t6 API (reads, matching, extraction) and Jev adapters."""
     from t6.client import Client
 
-    from jo_watchdog.adapters.deepseek import DeepSeekClassifier
     from jo_watchdog.adapters.jev import JevMatcher
     from jo_watchdog.adapters.notion import NotionAdapter
     from jo_watchdog.adapters.t6api import T6Api
+    from jo_watchdog.adapters.t6llm import T6LlmClassifier
 
     notion = NotionAdapter(notion_token())
     t6api = T6Api(Client(t6_api_url(), t6_api_secret()))
-    classifier = DeepSeekClassifier(
-        deepseek_token(),
-        base_url=config.deepseek_base_url,
-        model=config.deepseek_model,
-        timeout_seconds=config.deepseek_timeout_seconds,
+    classifier = T6LlmClassifier(
+        Client(t6_api_url(), t6_api_secret(), timeout=config.llm_timeout_seconds),
+        model_hint=config.llm_model_hint,
+        timeout_seconds=config.llm_timeout_seconds,
     )
     matcher = JevMatcher(
         openrouter_token(),
@@ -76,7 +74,7 @@ def build_adapters(config: Config) -> Adapters:
         t6api=t6api,
         classifier=classifier,
         matcher=matcher,
-        closers=[notion.close, classifier.close, matcher.close, close_telegram],
+        closers=[notion.close, matcher.close, close_telegram],
     )
 
 

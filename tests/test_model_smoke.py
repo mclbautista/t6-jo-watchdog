@@ -14,17 +14,16 @@ from jo_watchdog.app.model_smoke import (
     SECRET,
     PairError,
     build_regression_request,
-    check_deepseek,
+    check_extraction,
     check_jev,
     load_pairs,
 )
 from jo_watchdog.app.smoke_gate import FAIL, MANUAL, PASS
-from jo_watchdog.core.masker import WITHHELD
+from tests.fakes import LLM_RECORDED, FakeLlmClient, llm_answer
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PAIRS_PATH = FIXTURES / "jev" / "regression_pairs.json"
 PAIRS = json.loads(PAIRS_PATH.read_text(encoding="utf-8"))
-DEEPSEEK = json.loads((FIXTURES / "deepseek_recorded.json").read_text(encoding="utf-8"))
 
 JEV = dict(
     url="https://openrouter.test/decisions",
@@ -182,51 +181,42 @@ class JevFixtureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(check.requests_sent, 0)
 
 
-def deepseek_transport(case: str, seen: list | None = None):
-    recorded = DEEPSEEK[case]
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if seen is not None:
-            seen.append(json.loads(request.content))
-        return httpx.Response(recorded["status"], json=recorded["body"])
-
-    return httpx.MockTransport(handler)
+async def extraction(*answers):
+    client = FakeLlmClient(*answers)
+    return await check_extraction(client, model_hint="deepseek-chat", timeout=5), client
 
 
-async def deepseek(inner):
-    return await check_deepseek(
-        "sk-test", base_url="https://api.deepseek.test", model="deepseek-chat", timeout=5,
-        inner=inner,
-    )  # fmt: skip
-
-
-class DeepSeekSmokeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_mask_positive_and_no_mask_cases_both_run(self):
-        seen: list = []
-        check = await deepseek(deepseek_transport("jo", seen))
+class ExtractionSmokeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_credential_and_no_credential_cases_both_run_as_posted(self):
+        check, client = await extraction(llm_answer("jo"))
         self.assertEqual(check.result.status, PASS, check.result.detail)
-        self.assertEqual(len(seen), 2)
-        positive, negative = (body["messages"][-1]["content"] for body in seen)
-        self.assertNotIn(SECRET, json.dumps(seen))
-        self.assertIn(WITHHELD, positive)
+        self.assertEqual(check.requests_sent, 2)
+        positive, negative = (request.input_text for request in client.requests)
+        self.assertEqual(positive, MASK_POSITIVE)  # the t6 API withholds it, not the watchdog
         self.assertEqual(negative, MASK_NEGATIVE)
         self.assertIn("pw:", MASK_POSITIVE)
 
+    async def test_a_reply_that_carries_the_credential_fails(self):
+        recorded = json.loads(json.dumps(LLM_RECORDED["jo"]))
+        recorded["result"]["output"]["notes"] = f"pw: {SECRET}"
+        leaky = type(llm_answer("jo")).model_validate(recorded)
+        check, _ = await extraction(leaky)
+        self.assertEqual(check.result.status, FAIL)
+        self.assertIn("credential", check.result.detail)
+
     async def test_reports_snapshot_and_token_metadata(self):
-        check = await deepseek(deepseek_transport("jo"))
-        recorded = DEEPSEEK["jo"]["body"]
+        check, _ = await extraction(llm_answer("jo"))
+        recorded = LLM_RECORDED["jo"]["result"]
         text = "\n".join(check.lines)
         self.assertIn(recorded["model"], text)
-        self.assertIn(
-            f"{recorded['usage']['prompt_tokens']}/{recorded['usage']['completion_tokens']}", text
-        )
+        self.assertIn(f"{recorded['tokens']['prompt']}/{recorded['tokens']['completion']}", text)
 
     async def test_invalid_structured_output_fails(self):
         for case in ("malformed_json", "schema_mismatch", "empty_content", "provider_failure"):
             with self.subTest(case=case):
-                check = await deepseek(deepseek_transport(case))
+                check, _ = await extraction(llm_answer(case))
                 self.assertEqual(check.result.status, FAIL)
 
     async def test_non_jo_verdict_needs_review_not_a_pass(self):
-        check = await deepseek(deepseek_transport("not_jo"))
+        check, _ = await extraction(llm_answer("not_jo"))
         self.assertEqual(check.result.status, MANUAL)

@@ -31,7 +31,6 @@ ALL = {
     "T6_API_URL": "http://t6.test",
     "T6_API_SECRET": "s",
     "NOTION_API_KEY": "n",
-    "DEEPSEEK_API_KEY": "d",
     "OPENROUTER_API_KEY": "o",
     "WATCHDOG_SECRET": SECRET,
 }

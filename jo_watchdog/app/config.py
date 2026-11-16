@@ -29,7 +29,6 @@ from pydantic import (
     model_validator,
 )
 
-from jo_watchdog.adapters.deepseek import DEFAULT_BASE_URL, DEFAULT_MODEL
 from jo_watchdog.adapters.jev import JEV_MODEL, JEV_URL
 from jo_watchdog.adapters.notion import NOTION_VERSION
 from jo_watchdog.core.resolve import ResolveSettings
@@ -49,8 +48,8 @@ _NOTION_ID_KEYS = (
     "deliverables_data_source_id",
     "standing_cc_contact_page_id",
 )
-_URL_KEYS = ("deepseek_base_url", "jev_url")
-_NON_EMPTY_KEYS = ("deepseek_model", "jev_model", "ledger_path")
+_URL_KEYS = ("jev_url",)
+_NON_EMPTY_KEYS = ("llm_model_hint", "jev_model", "ledger_path")
 
 # Keys the running service cannot do without; checked by ``require_live_keys``.
 LIVE_REQUIRED_KEYS = (
@@ -66,7 +65,6 @@ SECRET_KEYS = (
     "T6_API_URL",
     "T6_API_SECRET",
     "NOTION_API_KEY",
-    "DEEPSEEK_API_KEY",
     "OPENROUTER_API_KEY",
 )
 
@@ -106,10 +104,11 @@ class Config(BaseModel):
     job_orders_data_source_id: str
     notion_version: str = NOTION_VERSION
 
-    # DeepSeek classify/extract
-    deepseek_base_url: str = DEFAULT_BASE_URL
-    deepseek_model: str = DEFAULT_MODEL  # the "latest" alias, no pin
-    deepseek_timeout_seconds: float = Field(default=60, gt=0)
+    # Classify/extract through the t6 API (``llm run``): the model the API's provider list
+    # names (the "latest" alias, no pin), and how long to wait for the call. The API's own
+    # provider timeout is 60 s, so a shorter wait here would cut off a call that is still running.
+    llm_model_hint: str = "deepseek-chat"
+    llm_timeout_seconds: float = Field(default=70, ge=70)
 
     # Live resolution caches (#22)
     contacts_data_source_id: str = "77b2a701-71db-4e88-a694-37f07303e77e"
@@ -338,10 +337,6 @@ def t6_api_secret() -> str:
 
 def notion_token() -> str:
     return _secret("NOTION_API_KEY")
-
-
-def deepseek_token() -> str:
-    return _secret("DEEPSEEK_API_KEY")
 
 
 def openrouter_token() -> str:

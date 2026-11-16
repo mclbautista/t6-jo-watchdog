@@ -1,7 +1,7 @@
 """Held-out extraction report: ``python -m jo_watchdog.app.extraction_report``.
 
-Runs the live DeepSeek classifier over every corpus Job Order that is not a
-few-shot example and prints the per-field exact-match rate (whitespace
+Runs the production classifier (the t6 API's ``llm run``) over every corpus Job Order that
+is not a few-shot example and prints the per-field exact-match rate (whitespace
 normalised) against the golden fixtures. It is a report, never a CI gate: the
 owner chose no pass bar (#28, Owner decisions). Classification precision and
 recall are not reported until real chatter and near-miss fixtures exist.
@@ -17,18 +17,17 @@ import json
 from pathlib import Path
 
 from jo_watchdog.core.extraction import EXTRACTED_FIELDS, field_matches
-from jo_watchdog.core.masker import outbound_text
 
 FIXTURES = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
 
 
 def held_out_cases(fixtures: Path = FIXTURES) -> list[dict]:
-    """Golden cases minus the few-shot examples, each with its masked corpus text."""
+    """Golden cases minus the few-shot examples, each with its corpus text (the API masks it)."""
     corpus = json.loads((fixtures / "redacted_corpus.json").read_text(encoding="utf-8"))
     golden = json.loads((fixtures / "extraction_golden.json").read_text(encoding="utf-8"))
     fewshot = set(json.loads((fixtures / "fewshot_ids.json").read_text())["corpus_indices"])
     return [
-        {**case, "masked_text": outbound_text(corpus[case["corpus_index"]]).text}
+        {**case, "text": corpus[case["corpus_index"]]}
         for case in golden["cases"]
         if case["corpus_index"] not in fewshot
     ]
@@ -60,25 +59,22 @@ def render(rates: dict[str, float], n: int, failures: int, verdict_jo: int) -> s
 
 
 async def _run_live(cases: list[dict], config_path: str) -> dict[int, dict | None]:
-    from jo_watchdog.adapters.deepseek import DeepSeekClassifier
-    from jo_watchdog.app.config import deepseek_token, load_config
+    from t6.client import Client
+
+    from jo_watchdog.adapters.t6llm import T6LlmClassifier
+    from jo_watchdog.app.config import load_config, t6_api_secret, t6_api_url
 
     config = load_config(config_path)
-    classifier = DeepSeekClassifier(
-        deepseek_token(),
-        base_url=config.deepseek_base_url,
-        model=config.deepseek_model,
-        timeout_seconds=config.deepseek_timeout_seconds,
+    classifier = T6LlmClassifier(
+        Client(t6_api_url(), t6_api_secret(), timeout=config.llm_timeout_seconds),
+        model_hint=config.llm_model_hint,
+        timeout_seconds=config.llm_timeout_seconds,
     )
     outputs: dict[int, dict | None] = {}
-    try:
-        for case in cases:
-            result = await classifier.classify(case["masked_text"], None)
-            outputs[case["corpus_index"]] = (
-                result.extraction.model_dump() if result.extraction else None
-            )
-    finally:
-        await classifier.close()
+    for case in cases:
+        result = await classifier.classify(case["text"], None)
+        extraction = result.extraction
+        outputs[case["corpus_index"]] = extraction.model_dump() if extraction else None
     return outputs
 
 

@@ -1,5 +1,5 @@
 # Non-secret configuration. Copy to config.yaml and fill in the real values.
-# Secrets (TELEGRAM_BOT_TOKEN, NOTION_API_KEY, DEEPSEEK_API_KEY,
+# Secrets (TELEGRAM_BOT_TOKEN, T6_API_SECRET, NOTION_API_KEY,
 # OPENROUTER_API_KEY) go in .env, never here.
 #
 # Every key is validated at startup; a bad or unknown key fails the boot.
@@ -27,10 +27,9 @@ notion_version: "2026-03-11"        # pinned API version (do not change casually
 # --- Ledger (#18) ---
 ledger_path: "./data/ledger.db"     # the container uses /app/data (a named volume)
 
-# --- DeepSeek classify/extract (#20) ---
-deepseek_base_url: "https://api.deepseek.com"
-deepseek_model: "deepseek-chat"     # the "latest" alias; never pin a dated model
-deepseek_timeout_seconds: 60
+# --- Classify/extract through the t6 API (`llm run`) ---
+llm_model_hint: "deepseek-chat"     # the API's provider model; the "latest" alias, never a dated pin
+llm_timeout_seconds: 70             # at least 70: the API waits up to 60 s for the provider
 
 # --- Planning (#21) ---
 department_aliases:                 # header token -> Notion Department option

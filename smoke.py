@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Manual real-account smoke verification (issue #27). Never run in CI.
 
-Checks the assumptions CI deliberately excludes: live Telegram, Notion, DeepSeek
-and Jev behavior, the deployment's storage permissions, and the full capture
+Checks the assumptions CI deliberately excludes: live Telegram, Notion, extraction through
+the t6 API and Jev behavior, the deployment's storage permissions, and the full capture
 pipeline against real accounts. Each step prints PASS, FAIL, SKIP, MANUAL or
 ATTESTED. The run ends with a verdict, and only FULL VERIFICATION exits 0:
 
@@ -18,8 +18,8 @@ ATTESTED. The run ends with a verdict, and only FULL VERIFICATION exits 0:
     python smoke.py --config config.yaml --only reactions,notion_access
     python smoke.py --config config.yaml --forward-fixtures fw.json --reaction-message-id 12345
 
-Secrets come from the environment (``.env``): TELEGRAM_BOT_TOKEN,
-NOTION_API_KEY, DEEPSEEK_API_KEY, OPENROUTER_API_KEY.
+Secrets come from the environment (``.env``): TELEGRAM_BOT_TOKEN, T6_API_URL,
+T6_API_SECRET, NOTION_API_KEY, OPENROUTER_API_KEY.
 
 Side effects, by step:
 
@@ -31,8 +31,8 @@ Side effects, by step:
   delivered capture report and ``reaction_state = set``, not the last ledger row.
   ``pipeline`` creates one clearly marked Job Order (the integration cannot
   archive it; the URL is printed so you can delete it by hand).
-- ``deepseek`` makes two live calls (a masked-credential text and a no-mask text) through
-  the production classifier; ``jev`` makes exactly one live Decisions request that holds
+- ``extraction`` makes two live ``llm run`` calls (a text with a credential and a text without)
+  through the production classifier; ``jev`` makes exactly one live Decisions request that holds
   all three regression pairs (``tests/fixtures/jev/regression_pairs.json``), validated by
   the production matcher. Both need explicit authorization and cost tokens. They print the
   returned snapshot, token counts, probabilities and any ``Retry-After``/``X-RateLimit-*``
@@ -104,8 +104,10 @@ from jo_watchdog.app.config import (
     missing_secrets,
     placeholder_keys,
     require_live_keys,
+    t6_api_secret,
+    t6_api_url,
 )
-from jo_watchdog.app.model_smoke import ModelCheck, check_deepseek, check_jev
+from jo_watchdog.app.model_smoke import ModelCheck, check_extraction, check_jev
 from jo_watchdog.app.smoke_gate import (
     FAIL,
     MANUAL,
@@ -170,9 +172,9 @@ class RecordingTelegram:
 
 
 class AlwaysJoClassifier:
-    """Stands in for DeepSeek in the synthetic pipeline steps."""
+    """Stands in for the classifier in the synthetic pipeline steps."""
 
-    async def classify(self, masked_text: str, origin_lines) -> ClassifyResult:
+    async def classify(self, text: str, origin_lines) -> ClassifyResult:
         extraction = Extraction(
             verdict="jo",
             confidence="high",
@@ -679,16 +681,18 @@ def _print_check(check: ModelCheck) -> Result:
     return check.result
 
 
-async def step_deepseek(s: Smoke) -> Result:
-    key = os.environ.get("DEEPSEEK_API_KEY")
-    if not key:
-        return skip("DEEPSEEK_API_KEY not set")
+async def step_extraction(s: Smoke) -> Result:
+    """Two live ``llm run`` calls through the production classifier."""
+    if not os.environ.get("T6_API_URL") or not os.environ.get("T6_API_SECRET"):
+        return skip("T6_API_URL or T6_API_SECRET not set")
+    from t6.client import Client
+
+    client = Client(t6_api_url(), t6_api_secret(), timeout=s.config.llm_timeout_seconds)
     return _print_check(
-        await check_deepseek(
-            key,
-            base_url=s.config.deepseek_base_url,
-            model=s.config.deepseek_model,
-            timeout=s.config.deepseek_timeout_seconds,
+        await check_extraction(
+            client,
+            model_hint=s.config.llm_model_hint,
+            timeout=s.config.llm_timeout_seconds,
         )
     )
 
@@ -850,7 +854,7 @@ STEPS: list[tuple[str, Callable[[Smoke], Awaitable[Result]]]] = [
     ("pipeline", step_pipeline),
     ("query_visibility", step_query_visibility),
     ("unknown_select", step_unknown_select),
-    ("deepseek", step_deepseek),
+    ("extraction", step_extraction),
     ("jev", step_jev),
     ("dry_run", step_dry_run),
     ("dry_run_scenario", step_dry_run_scenario),

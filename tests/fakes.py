@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from t6.verbs import Done, Refused
+
 from jo_watchdog.adapters.protocols import ClassifyResult, IncomingUpdate, PageRef
 from jo_watchdog.adapters.t6api import T6ApiError
 from jo_watchdog.app.caches import department_options, person_from_page, project_from_page
@@ -80,8 +82,8 @@ class FakeClassifier:
         self.results = list(results) or [ok_result()]
         self.calls: list[tuple[str, list[str] | None]] = []
 
-    async def classify(self, masked_text, origin_lines=None) -> ClassifyResult:
-        self.calls.append((masked_text, origin_lines))
+    async def classify(self, text, origin_lines=None) -> ClassifyResult:
+        self.calls.append((text, origin_lines))
         if len(self.results) > 1:
             return self.results.pop(0)
         return self.results[0]
@@ -324,3 +326,31 @@ class FakeMatcher:
         return [
             self.contacts.get(m.casefold(), ContactMatch(status="unresolved")) for m in mentions
         ]
+
+
+LLM_RECORDED = json.loads(
+    (Path(__file__).parent / "fixtures" / "llm_run_recorded.json").read_text(encoding="utf-8")
+)
+
+
+def llm_answer(name: str):
+    """A recorded ``llm run`` outcome: ``Done`` or ``Refused``."""
+    recorded = LLM_RECORDED[name]
+    model = Done if recorded["outcome"] == "done" else Refused
+    return model.model_validate(recorded)
+
+
+class FakeLlmClient:
+    """Stands in for ``t6.client.Client``: scripted ``llm run`` answers (an outcome or an
+    exception; the last repeats), and the requests it was sent."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers) or [llm_answer("jo")]
+        self.requests: list = []
+
+    def llm_run(self, inputs):
+        self.requests.append(inputs)
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer

@@ -6,12 +6,6 @@
     "expires": "2027-02-15"
   },
   {
-    "name": "DeepSeek API host (direct access), cleared by #138",
-    "file": "jo_watchdog/adapters/deepseek.py",
-    "rule": "direct-http",
-    "expires": "2027-02-15"
-  },
-  {
     "name": "OpenRouter API host (direct access), cleared by #138",
     "file": "jo_watchdog/adapters/jev.py",
     "rule": "direct-http",

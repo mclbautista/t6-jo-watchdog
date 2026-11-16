@@ -1,7 +1,7 @@
 """The worker: poll (commit-before-offset) then drain (capture pipeline).
 
 One asyncio process, one ledger, one Notion writer. Draining classifies each
-``received`` message through DeepSeek, then plans and writes the ``extracted``
+``received`` message through the t6 API's ``llm run``, then plans and writes the ``extracted``
 ones. The poller and drainer run
 sequentially in ``run``/``run_once``; the commit-before-offset invariant lives
 entirely in ``Ledger.accept_message`` (single transaction).
@@ -82,6 +82,9 @@ STUCK_AFTER = timedelta(hours=1)
 # A failed reaction is retried inline after these delays, then counted.
 REACTION_RETRY_SECONDS = (2, 5)
 DEADMAN_CHECK_SECONDS = 30.0
+
+# The extraction input is masked by the t6 API (``llm run``), not by the watchdog.
+MASKED_BY = "t6-api"
 
 CLASSIFICATION = "Classification"
 NOTION_WRITE = "Notion write"
@@ -338,14 +341,12 @@ class Worker:
             return State.IGNORED
 
         raw_message = json.loads(msg["raw_source"]).get("message") or {}
-        result = await self.classifier.classify(
-            msg["masked_text"], forward_origin_lines(raw_message)
-        )
+        result = await self.classifier.classify(msg["text"], forward_origin_lines(raw_message))
         trace = result.model_dump(exclude={"extraction", "retry_after"})
         call = {
             "provider": "deepseek",
             "purpose": "classify_extract",
-            "masker_version": msg["masker_version"],
+            "masker_version": MASKED_BY,
             **trace,
         }
         if result.extraction is None:
@@ -375,7 +376,7 @@ class Worker:
             "extraction": extraction.model_dump(),
             "findings": findings,
             "trace": {field: trace[field] for field in _TRACE_FIELDS}
-            | {"masker_version": msg["masker_version"]},
+            | {"masker_version": MASKED_BY},
         }
         return self.ledger.record_extraction(key, call=call, result=stage_result)
 

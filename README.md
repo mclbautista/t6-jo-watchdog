@@ -7,7 +7,7 @@ payload, writes it once, reads it back, and acknowledges with a fixed-meaning
 "captured" reaction.
 
 Status: the build tickets (#20 to #27, #39) are closed. Classification and
-extraction (DeepSeek), credential masking, people and project resolution,
+extraction (DeepSeek, through the t6 API), credential masking, people and project resolution,
 verification with ops reports, retries and the heartbeat, gateway mode and
 Deliverable matching (shadow mode) are all in. The one open issue is #103, the
 planned rename to t6-sixto-watchdog and the move onto t6.
@@ -16,8 +16,8 @@ planned rename to t6-sixto-watchdog and the move onto t6.
 
 Anyone can read this repository and its full history. Never commit:
 
-- `.env` or any real secret: the Telegram bot token, the Notion API key, the
-  DeepSeek or OpenRouter keys, gateway secrets
+- `.env` or any real secret: the Telegram bot token, the t6 API and Notion keys,
+  the OpenRouter key, gateway secrets
 - `config.yaml` (it holds the real chat, topic and Notion ids; only
   `config.example.yaml` is tracked)
 - `data/`, `*.db` or any SQLite file (the ledger holds raw JO text, including
@@ -40,8 +40,8 @@ jo_watchdog/
   core/       pure: plan builder, payload builder, read-back compare, masker seam,
               verification findings, ops-report rendering
   ledger/     SQLite (WAL, versioned schema), offsets, state machine
-  adapters/   Telegram (aiogram-as-client), Notion (httpx, pinned version), DeepSeek,
-              Jev Deliverable matcher (OpenRouter Decisions API)
+  adapters/   Telegram (aiogram-as-client), Notion (httpx, pinned version), t6 API
+              (reads, matching, extraction via `llm run`), Jev Deliverable matcher (OpenRouter Decisions API)
   prompts/    versioned few-shot turns for the classify/extract prompt
   app/        config, worker loop, entry point
 tests/        unittest (runs under pytest too); real SQLite + fake adapters
@@ -63,9 +63,9 @@ python -m jo_watchdog.app --config config.yaml
 ```
 
 `config.yaml` is validated at startup: an unknown key, a bad value, or a
-missing chat id, page id, handle or data source id stops the boot. All six
+missing chat id, page id, handle or data source id stops the boot. All five
 values in `.env` (`TELEGRAM_BOT_TOKEN`, `T6_API_URL`, `T6_API_SECRET`,
-`NOTION_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`) must be set. `config.example.yaml` documents every key.
+`NOTION_API_KEY`, `OPENROUTER_API_KEY`) must be set. `config.example.yaml` documents every key.
 
 Boot also rejects structurally invalid values before any provider call:
 malformed Notion ids, non-positive topic ids, non-http(s) provider URLs, empty
@@ -103,7 +103,7 @@ seams. The real-account checks live in `smoke.py` and are run by hand.
    Order names come back masked and resolution fails.
 5. Fill `standing_cc_contact_page_id` (Priya's page in Contacts),
    `standing_cc_telegram_handle` and `owner_telegram_handle`. Add
-   `DEEPSEEK_API_KEY` and `OPENROUTER_API_KEY` to `.env`.
+   `OPENROUTER_API_KEY` to `.env`.
 6. Prepare a local data directory and run the smoke check until it passes (the
    container does not use this directory; it keeps its ledger in a named volume):
 
@@ -329,10 +329,10 @@ heartbeat in the ops topic is the signal** that the watchdog is down, and
 whoever notices should restart it and check the intake topic for posts it
 missed.
 
-## Extraction report (DeepSeek, not a CI gate)
+## Extraction report (through the t6 API, not a CI gate)
 
 ```sh
-DEEPSEEK_API_KEY=... python -m jo_watchdog.app.extraction_report --config config.yaml --save run.json
+T6_API_URL=... T6_API_SECRET=... python -m jo_watchdog.app.extraction_report --config config.yaml --save run.json
 python -m jo_watchdog.app.extraction_report --from run.json   # re-score offline
 ```
 

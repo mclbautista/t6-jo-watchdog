@@ -3,8 +3,8 @@
 ``run`` (the default) builds the real adapters (aiogram Telegram, httpx Notion)
 and the ledger, then runs the worker loop. Secrets come from the environment
 (``TELEGRAM_BOT_TOKEN`` or, with ``telegram_mode: gateway``, ``WATCHDOG_SECRET``;
-``NOTION_API_KEY``, ``DEEPSEEK_API_KEY``, ``OPENROUTER_API_KEY``); non-secrets come from the
-YAML config.
+``T6_API_URL``, ``T6_API_SECRET``, ``NOTION_API_KEY``, ``OPENROUTER_API_KEY``); non-secrets
+come from the YAML config.
 
 ``retry <telegram_key>`` (or ``retry --all-exhausted``) makes exhausted messages
 eligible again without touching their stored plan.
