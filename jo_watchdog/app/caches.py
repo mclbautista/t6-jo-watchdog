@@ -1,8 +1,10 @@
 """Six-hourly People, Projects and Department caches, persisted in the ledger.
 
+The three lists are read through the t6 API (``person list``, ``project list``, ``departments``).
+
 Every successful, non-empty refresh is written to ``cache_snapshot`` and becomes
 the live snapshot. On restart the latest persisted snapshot loads before the
-first live refresh, so a Notion outage at boot does not blank every relation. A
+first live refresh, so an API outage at boot does not blank every relation. A
 failed refresh writes nothing, keeps the previous snapshot, and reports a stale
 cache only once it is older than ``cache_stale_alert_hours``.
 
@@ -19,7 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from jo_watchdog.adapters.protocols import NotionReader
+from jo_watchdog.adapters.protocols import DirectoryReader
 from jo_watchdog.app.config import Config, resolve_settings
 from jo_watchdog.core.resolve import (
     DepartmentResolution,
@@ -40,9 +42,10 @@ log = logging.getLogger("jo_watchdog.caches")
 
 KINDS = ("people", "projects", "departments")
 # Bump when the cached payload shape changes; older snapshots are then ignored.
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
-# Live Notion property names (schema is the contract).
+# Live Notion property names (schema is the contract). The Notion page parsers below are
+# no longer used by the service; the smoke tuning check and recorded-page tests still read pages.
 CONTACT_NAME = "Name"
 CONTACT_USER_ID = "TelegramUserID"
 CONTACT_HANDLE = "TelegramHandle"
@@ -83,7 +86,7 @@ def person_from_page(page: dict[str, Any]) -> Person:
         name=_plain(props.get(CONTACT_NAME)),
         telegram_user_id=_plain(props.get(CONTACT_USER_ID)),
         telegram_handle=_plain(props.get(CONTACT_HANDLE)),
-        aliases=_plain(props.get(CONTACT_ALIASES)),
+        aliases=[a.strip() for a in _plain(props.get(CONTACT_ALIASES)).split(",") if a.strip()],
         end_of_shift=_plain(props.get(CONTACT_END_OF_SHIFT)),
     )
 
@@ -94,6 +97,26 @@ def project_from_page(page: dict[str, Any]) -> ProjectEntry:
         page_id=page["id"],
         name=_plain(props.get(PROJECT_NAME)),
         code=_plain(props.get(PROJECT_CODE)),
+    )
+
+
+def person_from_api(item: dict[str, Any]) -> Person:
+    """A ``person list`` item. Aliases are a list and the end of shift is already a time."""
+    user_id = item.get("telegram_user_id")
+    return Person(
+        page_id=item["page_id"],
+        name=item.get("name") or "",
+        telegram_user_id="" if user_id is None else str(user_id),
+        telegram_handle=item.get("telegram_handle") or "",
+        aliases=list(item.get("aliases") or ()),
+        end_of_shift=item.get("end_of_shift") or "",
+    )
+
+
+def project_from_api(item: dict[str, Any]) -> ProjectEntry:
+    """A ``project list`` item."""
+    return ProjectEntry(
+        page_id=item["page_id"], name=item.get("name") or "", code=item.get("project_code") or ""
     )
 
 
@@ -125,12 +148,12 @@ class CacheManager:
         self,
         *,
         ledger: Ledger,
-        notion: NotionReader,
+        directory: DirectoryReader,
         config: Config,
         clock: Callable[[], datetime] = _utcnow,
     ):
         self.ledger = ledger
-        self.notion = notion
+        self.directory = directory
         self.config = config
         self.settings = resolve_settings(config)
         self.clock = clock
@@ -166,13 +189,15 @@ class CacheManager:
 
     async def _fetch(self, kind: str) -> list:
         if kind == "people":
-            pages = await self.notion.query_all(self.config.contacts_data_source_id)
-            return [person_from_page(p).model_dump() for p in pages]
+            return [
+                person_from_api(p).model_dump(mode="json") for p in await self.directory.people()
+            ]
         if kind == "projects":
-            pages = await self.notion.query_all(self.config.projects_data_source_id)
-            return [project_from_page(p).model_dump() for p in pages]
-        schema = await self.notion.retrieve_data_source(self.config.job_orders_data_source_id)
-        return department_options(schema)
+            return [
+                project_from_api(p).model_dump(mode="json")
+                for p in await self.directory.projects()
+            ]
+        return await self.directory.departments()
 
     async def refresh(self) -> list[StaleCache]:
         """Refresh every kind; return stale-cache events for failed refreshes past the threshold."""

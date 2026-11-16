@@ -11,13 +11,13 @@ from jo_watchdog.core.resolve import (
     PeopleIndex,
     Person,
     ResolveSettings,
+    normalize_aliases,
     normalize_name,
     relation_properties,
     resolve_department,
     resolve_mention,
     resolve_people,
     resolve_project,
-    split_aliases,
     split_mentions,
 )
 
@@ -64,7 +64,7 @@ class FixtureParsingTests(unittest.TestCase):
     def test_contacts_fields_read_by_live_property_names(self):
         by_id = {p.page_id: p for p in people()}
         self.assertEqual(by_id[NINA].telegram_handle, "@user_three")
-        self.assertEqual(by_id[NINA].aliases, "Nina, sam, KUYA sam")
+        self.assertEqual(by_id[NINA].aliases, ["Nina", "sam", "KUYA sam"])
         self.assertEqual(by_id[RAMON].end_of_shift, "10:00 PM")
         self.assertEqual(by_id[MIRA].telegram_user_id, "5550001")
         self.assertEqual(by_id[PRIYA].end_of_shift, "")
@@ -78,7 +78,8 @@ class FixtureParsingTests(unittest.TestCase):
 
 class NormalizationTests(unittest.TestCase):
     def test_aliases_split_trim_casefold_and_drop_honorifics(self):
-        self.assertEqual(split_aliases("Nina,  sam , KUYA sam,,"), ["nina", "sam", "sam"])
+        aliases = normalize_aliases(["Nina", "  sam ", "KUYA sam", ""])
+        self.assertEqual(aliases, ["nina", "sam", "sam"])
 
     def test_honorifics_dropped_on_mention_side(self):
         for raw in ("ate Lena", "Ate LENA", "sir lena", "kuya  Lena"):
@@ -135,7 +136,7 @@ class PeopleStepTests(unittest.TestCase):
     def test_entity_for_jo_cannot_supply_identity_for_majo(self):
         crowd = [
             Person(page_id="p-jo", name="Jo Lim", telegram_user_id="123"),
-            Person(page_id="p-lena", name="Lena Cruz", aliases="Lena"),
+            Person(page_id="p-lena", name="Lena Cruz", aliases=["Lena"]),
         ]
         entity = MentionEntity(text="Jo", user_id="123")
         result = resolve_mention("Lena", "assignee", PeopleIndex(crowd), SETTINGS, [entity])

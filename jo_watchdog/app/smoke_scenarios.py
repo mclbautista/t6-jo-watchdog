@@ -105,7 +105,7 @@ class ScriptedTelegram:
 
 
 class ScriptedNotion:
-    """Echoes the written Name and Telegram Key back; optionally reads back a wrong Name."""
+    """Echoes the written Name and Telegram Key back (write and API read); can read a wrong one."""
 
     def __init__(self, *, wrong_name: bool = False):
         self.wrong_name = wrong_name
@@ -129,11 +129,17 @@ class ScriptedNotion:
         self.created.append(payload)
         return PageRef(id=page_id, url=f"https://notion.example/{page_id}")
 
-    async def retrieve_page(self, page_id: str) -> dict:
+    async def read_job_order(self, page_id: str) -> dict:
+        """The ``jo get`` answer the t6 API would give for the page just created."""
         self.retrieved.append(page_id)
-        return self.pages[page_id]
+        props = self.pages[page_id]["properties"]
+        return {
+            "page_id": page_id,
+            "name": props["Name"]["title"][0]["plain_text"],
+            "telegram_key": props["Telegram Key"]["rich_text"][0]["plain_text"],
+        }
 
-    async def find_pages_by_telegram_key(self, data_source_id: str, telegram_key: str):
+    async def find_job_orders(self, telegram_key: str):
         return []
 
     async def query_project_deliverables(self, data_source_id: str, project_page_id: str):
@@ -200,7 +206,8 @@ class Harness:
         self.matcher = matcher
         self.ledger = Ledger(Path(tmp) / "scenario.db")
         adapters = Adapters(
-            telegram=self.telegram, notion=self.notion, classifier=FixedClassifier(),
+            telegram=self.telegram, notion=self.notion, t6api=self.notion,
+            classifier=FixedClassifier(),
             matcher=matcher,
         )
         self.worker = build_worker(

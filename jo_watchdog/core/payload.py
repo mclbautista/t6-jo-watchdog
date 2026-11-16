@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from jo_watchdog.core.masker import mask_text
@@ -125,25 +126,19 @@ def verify_readback(
     return mismatches
 
 
-def extract_readback_fields(page: dict) -> dict:
-    """Extract ``name``, ``telegram_key`` and the ``dates`` from a Notion page object.
+def readback_fields(job_order: Mapping[str, Any]) -> dict:
+    """Extract ``name``, ``telegram_key`` and the ``dates`` from a ``jo get`` Job Order.
 
-    Handles the real Notion property shapes (``title`` / ``rich_text`` arrays of
-    text objects) so the read-back comparison runs against the same data the
-    API returns.
+    ``date`` and ``deadline`` arrive as ISO text (a date, or a datetime with its
+    offset). They are shaped as ``{"start": text}`` so the minute compare of
+    ``verify_readback`` runs unchanged.
     """
-
-    def _plain(item: dict) -> str:
-        return item.get("plain_text") or item.get("text", {}).get("content", "") or ""
-
-    props = page.get("properties", {})
-    name = ""
-    title = props.get("Name", {}).get("title") or []
-    if title:
-        name = _plain(title[0])
-    telegram_key = ""
-    rich = props.get("Telegram Key", {}).get("rich_text") or []
-    if rich:
-        telegram_key = _plain(rich[0])
-    dates = {name: (props.get(name) or {}).get("date") for name in DATE_PROPERTIES}
-    return {"name": name, "telegram_key": telegram_key, "dates": dates}
+    dates = {
+        name: {"start": job_order[name.lower()]} if job_order.get(name.lower()) else None
+        for name in DATE_PROPERTIES
+    }
+    return {
+        "name": job_order.get("name") or "",
+        "telegram_key": job_order.get("telegram_key") or "",
+        "dates": dates,
+    }

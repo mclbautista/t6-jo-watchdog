@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from jo_watchdog.adapters.protocols import ClassifyResult, IncomingUpdate, PageRef
+from jo_watchdog.adapters.t6api import T6ApiError
+from jo_watchdog.app.caches import department_options, person_from_page, project_from_page
+from jo_watchdog.core.deadline import parse_shift_hour
 from jo_watchdog.core.extraction import EXTRACTED_FIELDS, PROMPT_TAG, Extraction
 
 # 2026-09-28 03:00:00 UTC = 11:00 in Manila.
@@ -193,3 +198,80 @@ class FakeNotion:
             for page in self.pages.values()
             if page["properties"]["Telegram Key"]["rich_text"][0]["plain_text"] == telegram_key
         ]
+
+    # The read side, shaped as the t6 API answers it (``jo get`` and ``jo find``). The
+    # worker reads through these; they go through the Notion-shaped methods above, so the
+    # failure counters and the seams that wrap those methods still apply.
+
+    async def read_job_order(self, page_id: str) -> dict:
+        props = (await self.retrieve_page(page_id))["properties"]
+        return {
+            "page_id": page_id,
+            "name": props["Name"]["title"][0]["plain_text"],
+            "telegram_key": props["Telegram Key"]["rich_text"][0]["plain_text"],
+            "date": ((props.get("Date") or {}).get("date") or {}).get("start"),
+            "deadline": ((props.get("Deadline") or {}).get("date") or {}).get("start"),
+        }
+
+    async def find_job_orders(self, telegram_key: str):
+        return await self.find_pages_by_telegram_key("unused", telegram_key)
+
+
+NOTION_FIXTURES = Path(__file__).parent / "fixtures" / "notion"
+
+
+def _recorded(name: str) -> dict:
+    return json.loads((NOTION_FIXTURES / name).read_text(encoding="utf-8"))
+
+
+class RecordedDirectory:
+    """A fake t6 API client for the caches: the recorded Contacts, Projects and Department
+    fixtures, shaped as ``person list``, ``project list`` and ``departments`` answer.
+
+    ``fail`` makes every call raise as an API outage would; ``empty_people`` answers an
+    empty Contacts list.
+    """
+
+    def __init__(self, contact_files=("contacts_query_page1.json", "contacts_query_page2.json")):
+        self.contact_files = contact_files
+        self.fail = False
+        self.empty_people = False
+        self.calls: list[str] = []
+
+    def _enter(self, name: str) -> None:
+        self.calls.append(name)
+        if self.fail:
+            raise T6ApiError("t6 API unavailable: 503 down")
+
+    async def people(self) -> list[dict]:
+        self._enter("people")
+        if self.empty_people:
+            return []
+        people = []
+        for name in self.contact_files:
+            for page in _recorded(name)["results"]:
+                person = person_from_page(page)
+                user_id = person.telegram_user_id
+                shift = parse_shift_hour(person.end_of_shift)  # the API sends a time as text
+                people.append(
+                    {
+                        "page_id": person.page_id,
+                        "name": person.name,
+                        "telegram_user_id": int(user_id) if user_id.isdigit() else None,
+                        "telegram_handle": person.telegram_handle or None,
+                        "aliases": person.aliases,
+                        "end_of_shift": shift.isoformat() if shift else None,
+                    }
+                )
+        return people
+
+    async def projects(self) -> list[dict]:
+        self._enter("projects")
+        return [
+            {"page_id": p.page_id, "name": p.name, "project_code": p.code or None}
+            for p in map(project_from_page, _recorded("projects_query.json")["results"])
+        ]
+
+    async def departments(self) -> list[str]:
+        self._enter("departments")
+        return department_options(_recorded("job_orders_data_source.json"))

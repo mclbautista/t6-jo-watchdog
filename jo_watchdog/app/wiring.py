@@ -17,6 +17,8 @@ from jo_watchdog.app.config import (
     gateway_secret,
     notion_token,
     openrouter_token,
+    t6_api_secret,
+    t6_api_url,
     telegram_token,
 )
 from jo_watchdog.app.worker import Worker
@@ -25,10 +27,11 @@ from jo_watchdog.ledger.db import Ledger
 
 @dataclass
 class Adapters:
-    """The four external adapters; ``closers`` release whatever the real ones opened."""
+    """The five external adapters; ``closers`` release whatever the real ones opened."""
 
     telegram: object
     notion: object
+    t6api: object
     classifier: object
     matcher: object | None
     closers: list = field(default_factory=list)
@@ -43,12 +46,16 @@ class Adapters:
 
 
 def build_adapters(config: Config) -> Adapters:
-    """The real aiogram, httpx, DeepSeek and Jev adapters, from the environment's secrets."""
+    """The real aiogram, httpx, t6 API, DeepSeek and Jev adapters, from the environment."""
+    from t6.client import Client
+
     from jo_watchdog.adapters.deepseek import DeepSeekClassifier
     from jo_watchdog.adapters.jev import JevMatcher
     from jo_watchdog.adapters.notion import NotionAdapter
+    from jo_watchdog.adapters.t6api import T6Api
 
     notion = NotionAdapter(notion_token())
+    t6api = T6Api(Client(t6_api_url(), t6_api_secret()))
     classifier = DeepSeekClassifier(
         deepseek_token(),
         base_url=config.deepseek_base_url,
@@ -66,6 +73,7 @@ def build_adapters(config: Config) -> Adapters:
     return Adapters(
         telegram=telegram,
         notion=notion,
+        t6api=t6api,
         classifier=classifier,
         matcher=matcher,
         closers=[notion.close, classifier.close, matcher.close, close_telegram],
@@ -93,13 +101,14 @@ def _build_telegram(config: Config):
 
 
 def build_worker(config: Config, ledger: Ledger, adapters: Adapters, **worker_options) -> Worker:
-    """The production worker: persisted caches loaded, Notion also the Deliverable source."""
-    caches = CacheManager(ledger=ledger, notion=adapters.notion, config=config)
+    """The production worker: caches loaded; Notion writes Job Orders and lists Deliverables."""
+    caches = CacheManager(ledger=ledger, directory=adapters.t6api, config=config)
     caches.load_persisted()  # last good snapshots first, then the live refresh
     return Worker(
         ledger=ledger,
         telegram=adapters.telegram,
         notion=adapters.notion,
+        job_orders=adapters.t6api,
         classifier=adapters.classifier,
         config=config,
         caches=caches,

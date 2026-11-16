@@ -597,7 +597,7 @@ async def synthetic_capture(s: Smoke, text: str, *, dry_run: bool) -> tuple[Resu
             result = await verify_capture(
                 ledger,
                 key,
-                notion=adapters.notion,
+                job_orders=adapters.t6api,
                 expect_dry_run=dry_run,
                 recorded_reactions=telegram.reactions,
             )
@@ -804,7 +804,7 @@ async def step_live_telegram(s: Smoke) -> Result:
             if msg["state"] == "ignored":
                 return manual(f"{key} was classified not-a-JO; post a real JO and re-run")
             result = await verify_capture(
-                ledger, key, notion=adapters.notion, expect_dry_run=s.config.dry_run
+                ledger, key, job_orders=adapters.t6api, expect_dry_run=s.config.dry_run
             )
         finally:
             await adapters.close()

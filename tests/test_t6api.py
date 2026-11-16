@@ -1,0 +1,208 @@
+"""The t6 API seam: outcome mapping, MISC in departments, threads, and the cache over it."""
+
+import asyncio
+import tempfile
+import threading
+import unittest
+from datetime import UTC, datetime, time
+from pathlib import Path
+
+from t6.client import APIError, Unavailable
+from t6.verbs import Ambiguous, Done, Refused
+
+from jo_watchdog.adapters.protocols import DirectoryReader, JobOrderReader
+from jo_watchdog.adapters.t6api import T6Api, T6ApiError
+from jo_watchdog.app.caches import CacheManager, person_from_api
+from jo_watchdog.core.deadline import resolve_deadline
+from jo_watchdog.ledger.db import Ledger
+from tests.test_caches import config
+
+PERSON = {
+    "page_id": "c-ana",
+    "name": "Ana Reyes",
+    "telegram_user_id": 111,
+    "telegram_handle": "@ana_r",
+    "aliases": ["Ana", "Ate A"],
+    "end_of_shift": "21:00:00",
+}
+
+
+class FakeClient:
+    """Stands in for ``t6.client.Client``: scripted outcomes, recorded inputs."""
+
+    def __init__(self, **answers):
+        self.answers = answers
+        self.inputs: dict[str, object] = {}
+        self.threads: dict[str, int] = {}
+
+    def _answer(self, name, inputs):
+        self.inputs[name] = inputs
+        self.threads[name] = threading.get_ident()
+        answer = self.answers[name]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer() if callable(answer) else answer
+
+    def person_list(self, inputs):
+        return self._answer("person_list", inputs)
+
+    def project_list(self, inputs):
+        return self._answer("project_list", inputs)
+
+    def departments(self, inputs):
+        return self._answer("departments", inputs)
+
+    def jo_find(self, inputs):
+        return self._answer("jo_find", inputs)
+
+    def jo_get(self, inputs):
+        return self._answer("jo_get", inputs)
+
+
+class OutcomeMappingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_seam_satisfies_both_protocols(self):
+        api = T6Api(FakeClient())
+        self.assertIsInstance(api, DirectoryReader)
+        self.assertIsInstance(api, JobOrderReader)
+
+    async def test_unavailable_refused_api_error_and_ambiguous_raise_one_error(self):
+        for answer, text in (
+            (Unavailable("connection refused"), "unavailable: connection refused"),
+            (Refused(rule="permission", reason="no grant"), "refused (permission): no grant"),
+            (APIError("API returned HTTP 502", 502), "HTTP 502"),
+            (Ambiguous(candidates=["a", "b"]), "ambiguous"),
+        ):
+            with self.subTest(text=text):
+                api = T6Api(FakeClient(person_list=answer))
+                with self.assertRaises(T6ApiError) as caught:
+                    await api.people()
+                self.assertIn(text, str(caught.exception))
+
+    async def test_departments_ask_for_misc_and_return_names_in_order(self):
+        client = FakeClient(
+            departments=Done(
+                result={"departments": [{"id": "1", "name": "TOC"}, {"id": "2", "name": "MISC"}]}
+            )
+        )
+        self.assertEqual(await T6Api(client).departments(), ["TOC", "MISC"])
+        self.assertTrue(client.inputs["departments"].include_misc)
+
+    async def test_find_returns_page_refs_oldest_first_as_the_api_gave_them(self):
+        client = FakeClient(
+            jo_find=Done(result={"job_orders": [{"page_id": "p-1"}, {"page_id": "p-2"}]})
+        )
+        refs = await T6Api(client).find_job_orders("-100:7")
+        self.assertEqual([r.id for r in refs], ["p-1", "p-2"])
+        self.assertTrue(refs[0].url.endswith("p1"))
+        self.assertEqual(client.inputs["jo_find"].telegram_key, "-100:7")
+
+    async def test_read_job_order_returns_the_job_order(self):
+        order = {"page_id": "p-1", "name": "N", "telegram_key": "-100:7", "date": None}
+        client = FakeClient(jo_get=Done(result={"job_order": order}))
+        self.assertEqual(await T6Api(client).read_job_order("p-1"), order)
+        self.assertEqual(client.inputs["jo_get"].ref, "p-1")
+
+
+class ThreadingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_hung_call_does_not_stall_the_event_loop_and_times_out(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        client = FakeClient(person_list=lambda: release.wait(5))
+        api = T6Api(client, call_timeout=0.2)
+        ticks = 0
+
+        async def heartbeat():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        beat = asyncio.create_task(heartbeat())
+        try:
+            with self.assertRaises(T6ApiError) as caught:
+                await api.people()
+        finally:
+            beat.cancel()
+        self.assertIn("no answer", str(caught.exception))
+        self.assertGreater(ticks, 5)  # the loop kept running while the call hung
+        self.assertNotEqual(client.threads["person_list"], threading.get_ident())
+
+
+class CachesOverTheApiTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.ledger = Ledger(Path(tmp.name) / "ledger.db")
+        self.addCleanup(self.ledger.close)
+        self.now = datetime(2026, 10, 22, tzinfo=UTC)
+
+    def client(self, **overrides):
+        answers = dict(
+            person_list=Done(result={"people": [PERSON]}),
+            project_list=Done(
+                result={"projects": [{"page_id": "proj-1", "name": "Show", "project_code": "SHW"}]}
+            ),
+            departments=Done(result={"departments": [{"id": "1", "name": "TOC"}]}),
+        )
+        answers.update(overrides)
+        return FakeClient(**answers)
+
+    def manager(self, client):
+        return CacheManager(
+            ledger=self.ledger,
+            directory=T6Api(client),
+            config=config(),
+            clock=lambda: self.now,
+        )
+
+    def test_a_contact_arrives_with_aliases_as_a_list_and_a_parsed_shift(self):
+        person = person_from_api(PERSON)
+        self.assertEqual(person.aliases, ["Ana", "Ate A"])
+        self.assertEqual(person.end_of_shift, time(21))
+        self.assertEqual(person.telegram_user_id, "111")
+
+    def test_a_flexible_shift_and_missing_ids_become_blank(self):
+        person = person_from_api({"page_id": "c-1", "name": "Bo", "end_of_shift": None})
+        self.assertEqual((person.end_of_shift, person.telegram_user_id), ("", ""))
+        self.assertEqual(person.aliases, [])
+
+    async def test_refresh_loads_the_three_lists_and_a_restart_keeps_the_shift_a_time(self):
+        await self.manager(self.client()).refresh()
+        restarted = self.manager(self.client())
+        restarted.load_persisted()
+        self.assertTrue(restarted.ready)
+        self.assertEqual(restarted.people[0].end_of_shift, time(21))
+        self.assertEqual(restarted.projects[0].code, "SHW")
+        self.assertEqual(restarted.departments, ["TOC"])
+
+    async def test_a_parsed_shift_reaches_the_deadline_rule_unchanged(self):
+        caches = self.manager(self.client())
+        await caches.refresh()
+        shifts = caches.resolve_people("Ana", None).assignee_shifts
+        posted = datetime(2026, 10, 22, 9, 0, tzinfo=UTC)
+        result = resolve_deadline(
+            "end of shift", posted, [(s.name, s.end_of_shift) for s in shifts]
+        )
+        self.assertEqual((result.source, result.deadline.hour), ("shift", 21))
+
+    async def test_an_api_outage_keeps_the_last_snapshot(self):
+        caches = self.manager(self.client())
+        await caches.refresh()
+        down = self.manager(self.client(person_list=Unavailable("down")))
+        down.load_persisted()
+        self.now = datetime(2026, 10, 22, 6, tzinfo=UTC)
+        await down.refresh()
+        self.assertEqual([p.name for p in down.people], ["Ana Reyes"])
+        self.assertEqual(self.ledger.cache_snapshot_count("people"), 1)
+
+    async def test_a_refusal_for_a_missing_grant_keeps_the_snapshot_too(self):
+        caches = self.manager(self.client())
+        await caches.refresh()
+        refused = self.manager(self.client(project_list=Refused(rule="permission", reason="x")))
+        refused.load_persisted()
+        await refused.refresh()
+        self.assertEqual(refused.projects[0].name, "Show")
+
+
+if __name__ == "__main__":
+    unittest.main()

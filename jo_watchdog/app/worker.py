@@ -21,6 +21,7 @@ from jo_watchdog.adapters.protocols import (
     DeliverableMatcher,
     DeliverableSource,
     GatewayRef,
+    JobOrderReader,
     NotionClient,
     PageRef,
     TelegramClient,
@@ -49,8 +50,8 @@ from jo_watchdog.core.job_order import (
 )
 from jo_watchdog.core.masker import outbound_text
 from jo_watchdog.core.payload import (
-    extract_readback_fields,
     page_url_for,
+    readback_fields,
     verify_readback,
 )
 from jo_watchdog.core.plan import first_line_of, header_line_of
@@ -155,6 +156,7 @@ class Worker:
         ledger: Ledger,
         telegram: TelegramClient,
         notion: NotionClient,
+        job_orders: JobOrderReader,
         classifier: Classifier,
         config: Config,
         caches: CacheManager | None = None,
@@ -167,6 +169,7 @@ class Worker:
         self.ledger = ledger
         self.telegram = telegram
         self.notion = notion
+        self.job_orders = job_orders
         self.classifier = classifier
         self.config = config
         self.caches = caches
@@ -576,7 +579,7 @@ class Worker:
         """Recover a row left in `writing` (crash or failed attempt).
 
         With a stored page id only the read-back is outstanding. Without one the
-        create is uncertain, so ask Notion by `Telegram Key`: adopt the one match,
+        create is uncertain, so ask the t6 API by `Telegram Key`: adopt the one match,
         create only when there is none, and report (never merge or delete) more
         than one.
         """
@@ -589,9 +592,7 @@ class Worker:
             await self._read_back(msg, plan, PageRef(id=page_id, url=page_url_for(page_id)))
             return
         try:
-            matches = await self.notion.find_pages_by_telegram_key(
-                self.config.job_orders_data_source_id, key
-            )
+            matches = await self.job_orders.find_job_orders(key)
         except Exception as exc:
             raise StepFailure(NOTION_RECONCILIATION, exc) from exc
         if not matches:
@@ -608,10 +609,10 @@ class Worker:
         key = msg["telegram_key"]
         # Read back and compare; a mismatch is recorded, never rewritten.
         try:
-            retrieved = await self.notion.retrieve_page(page_ref.id)
+            retrieved = await self.job_orders.read_job_order(page_ref.id)
         except Exception as exc:
             raise StepFailure(NOTION_READ_BACK, exc) from exc
-        fields = extract_readback_fields(retrieved)
+        fields = readback_fields(retrieved)
         mismatches = verify_readback(
             plan,
             retrieved_name=fields["name"],

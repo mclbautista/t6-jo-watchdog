@@ -34,14 +34,15 @@ async def verify_capture(
     ledger: Ledger,
     key: str,
     *,
-    notion,
+    job_orders,
     expect_dry_run: bool = False,
     recorded_reactions: list[tuple[int, int, str]] | None = None,
 ) -> Result:
     """Prove that the message named ``key`` (not the latest row) was fully captured.
 
-    Checks its classification, stored plan, Notion write and read-back, the outbox
-    rows linked to it, and ``reaction_state``. ``recorded_reactions`` is given when
+    Checks its classification, stored plan, Job Order write, the read-back through
+    ``job_orders`` (the t6 API reader), the outbox rows linked to it, and
+    ``reaction_state``. ``recorded_reactions`` is given when
     Telegram was a recording stand-in, to confirm the reaction reached it too.
     """
     msg = ledger.get_message(key)
@@ -78,11 +79,8 @@ async def verify_capture(
         return Result(FAIL, f"{key} read-back mismatch: {msg['readback_mismatch']}")
     if not msg["notion_page_id"]:
         return Result(FAIL, f"{key} has no Notion page id")
-    page = await notion.retrieve_page(msg["notion_page_id"])
-    stored_key = "".join(
-        part.get("plain_text", "")
-        for part in page["properties"]["Telegram Key"]["rich_text"]
-    )
+    job_order = await job_orders.read_job_order(msg["notion_page_id"])
+    stored_key = job_order.get("telegram_key") or ""
     if stored_key != key:
         return Result(FAIL, f"Notion page carries Telegram Key {stored_key!r}, want {key!r}")
     reports = [r for r in outbox if r["kind"] == "capture_report"]

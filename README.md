@@ -56,16 +56,16 @@ tools/        orphan-call reconciliation rehearsal
 
 ```sh
 cp config.example.yaml config.yaml   # fill in every FILL IN value
-cp .env.example .env                 # fill in the four secrets
+cp .env.example .env                 # fill in the six values
 pip install -e '.[dev]'
 set -a; . ./.env; set +a
 python -m jo_watchdog.app --config config.yaml
 ```
 
 `config.yaml` is validated at startup: an unknown key, a bad value, or a
-missing chat id, page id, handle or data source id stops the boot. All four
-secrets in `.env` (`TELEGRAM_BOT_TOKEN`, `NOTION_API_KEY`, `DEEPSEEK_API_KEY`,
-`OPENROUTER_API_KEY`) must be set. `config.example.yaml` documents every key.
+missing chat id, page id, handle or data source id stops the boot. All six
+values in `.env` (`TELEGRAM_BOT_TOKEN`, `T6_API_URL`, `T6_API_SECRET`,
+`NOTION_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`) must be set. `config.example.yaml` documents every key.
 
 Boot also rejects structurally invalid values before any provider call:
 malformed Notion ids, non-positive topic ids, non-http(s) provider URLs, empty
@@ -96,7 +96,11 @@ seams. The real-account checks live in `smoke.py` and are run by hand.
 4. Create a Notion internal integration with **Read content** and **Insert
    content**. Put its token in `.env` as `NOTION_API_KEY`, then share Job
    Orders, Contacts, Projects and Deliverables with it (each database's `•••`
-   menu, Connections).
+   menu, Connections). The watchdog also reads Contacts, Projects, Departments
+   and Job Orders (find and read-back) through the t6 API: put the API address
+   in `.env` as `T6_API_URL` and the key of the `watchdog` service as
+   `T6_API_SECRET`. That key needs the `unmasked` grant, or Project and Job
+   Order names come back masked and resolution fails.
 5. Fill `standing_cc_contact_page_id` (Priya's page in Contacts),
    `standing_cc_telegram_handle` and `owner_telegram_handle`. Add
    `DEEPSEEK_API_KEY` and `OPENROUTER_API_KEY` to `.env`.

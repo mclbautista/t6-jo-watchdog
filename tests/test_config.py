@@ -183,7 +183,7 @@ class ExampleFilesTests(unittest.TestCase):
 
     def test_env_example_lists_every_secret(self):
         text = (ROOT / ".env.example").read_text(encoding="utf-8")
-        names = set(re.findall(r"^([A-Z_]+)=", text, re.MULTILINE))
+        names = set(re.findall(r"^([A-Z0-9_]+)=", text, re.MULTILINE))
         self.assertEqual(names, set(SECRET_KEYS))
 
 
