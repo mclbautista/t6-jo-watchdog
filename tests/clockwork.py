@@ -48,7 +48,6 @@ def make_config(**overrides) -> Config:
         standing_cc_telegram_handle="priya",
         owner_telegram_handle=OWNER,
         captured_reaction="✅",
-        job_orders_data_source_id="ds-1",
     )
     base.update(overrides)
     return Config(**base)

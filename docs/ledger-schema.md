@@ -44,13 +44,13 @@ keys before commit, so tables that reference `messages(id)` stay valid.
 | reaction_state     | TEXT    | v5: capture reaction (👍, or 🤔 when findings were stored), `pending` \| `set` \| `failed` |
 | created_at         | TEXT    | ISO-8601 UTC                                       |
 | updated_at         | TEXT    | ISO-8601 UTC                                       |
-| masked_text        | TEXT    | outbound-safe representation of `text` (v2)        |
-| masker_version     | TEXT    | deterministic masker version used for this row (v2)|
-| masked_count       | INTEGER | number of credential assignments withheld (v2)     |
+| masked_text        | TEXT    | no longer written; NULL on rows made since #143 (v2) |
+| masker_version     | TEXT    | no longer written (v2)                             |
+| masked_count       | INTEGER | no longer written (v2)                             |
 | posted_at          | TEXT    | Telegram message date, ISO-8601 with `+08:00` (v3; backfilled from `raw_source`) |
 | attempts           | INTEGER | NOT NULL DEFAULT 0; failed attempts at the current stage, reset on every successful state change (v3) |
 | next_attempt_at    | TEXT    | ISO-8601 UTC; when a failed stage may run again (v3) |
-| last_error         | TEXT    | masked `<failure class>: <detail>` of the last failed attempt (v3) |
+| last_error         | TEXT    | `<failure class>: <detail>` of the last failed attempt (v3) |
 | verdict            | TEXT    | DeepSeek verdict: `jo`, `unsure` or `not_jo` (v3)  |
 | ignore_reason      | TEXT    | `not_jo` or `no_text` for `ignored` rows (v3)      |
 | exhausted_at       | TEXT    | v7: ISO-8601 UTC when the retry schedule ran out; NULL otherwise. An exhausted row keeps its state and plan, is never picked up again, and is made eligible by `retry` |
@@ -102,12 +102,12 @@ One row per model call, successful or not.
 | requested_model | TEXT    | NOT NULL; the configured alias (unpinned)              |
 | returned_model  | TEXT    | the model id the provider reported                     |
 | prompt_tag      | TEXT    | NOT NULL; e.g. `extract-v2`                            |
-| masker_version  | TEXT    | NOT NULL                                               |
+| masker_version  | TEXT    | NOT NULL; `t6-api` (the API masks model inputs)        |
 | input_tokens    | INTEGER |                                                        |
 | output_tokens   | INTEGER |                                                        |
 | latency_ms      | INTEGER |                                                        |
 | outcome         | TEXT    | NOT NULL; `ok`, `invalid_json`, `schema_violation`, `empty_content`, `timeout`, `api_error` |
-| error           | TEXT    | masked error detail                                    |
+| error           | TEXT    | error detail (ids and classes, no posted text)         |
 | detail_json     | TEXT    | Jev candidates and probabilities (#26)                 |
 | created_at      | TEXT    | NOT NULL, ISO-8601 UTC; indexed for the heartbeat      |
 
@@ -123,7 +123,7 @@ Single row (`id = 1`); the highest committed Telegram update id.
 ### `ignore_log`
 
 One row per out-of-scope update (wrong chat or topic), and one per message that
-moves to `ignored` (`not_jo` or `no_text`, with the masked first line).
+moves to `ignored` (`not_jo` or `no_text`, with the first line as posted).
 
 | column     | type    | notes                          |
 |------------|---------|--------------------------------|
@@ -132,7 +132,7 @@ moves to `ignored` (`not_jo` or `no_text`, with the masked first line).
 | message_id | INTEGER |                                |
 | update_id  | INTEGER |                                |
 | reason     | TEXT    | e.g. `out_of_scope_chat`, `edit_unknown_message` (v6) |
-| first_line | TEXT    | masked-ready first line        |
+| first_line | TEXT    | first line as posted           |
 | created_at | TEXT    | ISO-8601 UTC                   |
 
 ### `cache_snapshot` (v4, #22)
@@ -172,11 +172,11 @@ Telegram accepts a post but before the row is marked `sent` re-posts it.
 | kind                | TEXT    | `capture_report`, `edit_after_capture`, `stale_cache`, `outage_alert`, `heartbeat`, `dry_run_plan`, `message_gap` |
 | chat_id             | INTEGER | ops chat id                                            |
 | topic_id            | INTEGER | ops forum topic id                                     |
-| text                | TEXT    | rendered Telegram HTML; every source field masked      |
+| text                | TEXT    | rendered Telegram HTML; free text as a count, never the body |
 | state               | TEXT    | `pending` \| `accepted` \| `sent` \| `failed`          |
 | attempts            | INTEGER | send attempts so far (default 0)                       |
 | next_attempt_at     | TEXT    | ISO-8601 UTC; null = due now                           |
-| last_error          | TEXT    | masked error of the last failed attempt                |
+| last_error          | TEXT    | error of the last failed attempt                       |
 | telegram_message_id | INTEGER | id of the posted ops message once `sent`               |
 | created_at          | TEXT    | ISO-8601 UTC                                           |
 | sent_at             | TEXT    | ISO-8601 UTC                                           |
@@ -270,9 +270,10 @@ retry delay.
 `received` → `extracted` → `planned` → `writing` → `written` → `done`, and
 `received` → `ignored` (terminal).
 
-Version 2 adds `masked_text`, `masker_version`, and `masked_count`; opening a
-version-1 ledger backfills those fields and rewrites any stored plan through the
-same outbound boundary. Version 3 adds `extracted` (validated DeepSeek output)
+Version 2 adds `masked_text`, `masker_version`, and `masked_count`. The watchdog no longer
+masks anything (the t6 API masks what it sends a model and withholds credentials from what it
+writes), so a row made since then leaves them NULL and an old ledger is not backfilled.
+Version 3 adds `extracted` (validated DeepSeek output)
 and `ignored` (`not_jo` and `no_text`). A failed classify call leaves the row in
 `received` with `attempts` incremented and `next_attempt_at` set; there is no
 partial-row fallback. `writing` is the crash-window state:

@@ -21,7 +21,6 @@ from jo_watchdog.ledger.states import State
 from tests.fakes import FakeClassifier, FakeJobOrders, FakeTelegram, ok_result, update
 
 KEY = "-100123:42"
-WITHHELD = "[password withheld – see Telegram message]"
 
 
 async def no_sleep(_seconds: float) -> None:
@@ -36,7 +35,6 @@ def make_config(**overrides) -> Config:
         ops_topic_id=7,
         standing_cc_telegram_handle="priya",
         captured_reaction="✅",
-        job_orders_data_source_id="ds-1",
     )
     base.update(overrides)
     return Config(**base)
@@ -187,13 +185,13 @@ class CaptureReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Forwarded from a hidden user: Che", text)
         self.assertNotIn("Original message", text)
 
-    async def test_report_text_is_masked(self):
-        u = channel_forward(text="PW: swordfish\nTask: edit")
+    async def test_report_holds_the_name_and_never_the_body(self):
+        u = channel_forward(text="MFG - TOC - JO #74\nPW: swordfish\nTask: edit")
         h = Harness(self, [u])
         await h.worker.run_once()
         [row] = h.outbox()
+        self.assertIn("<code>MFG - TOC - JO #74</code>", row["text"])
         self.assertNotIn("swordfish", row["text"])
-        self.assertIn(f"<code>PW: {WITHHELD}</code>", row["text"])
         self.assertNotIn("swordfish", h.telegram.sent[0][2])
 
     async def test_plan_findings_tag_standing_cc(self):

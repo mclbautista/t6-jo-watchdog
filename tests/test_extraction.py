@@ -18,7 +18,6 @@ from jo_watchdog.core.extraction import (
     field_matches,
     forward_origin_lines,
 )
-from jo_watchdog.core.masker import outbound_text
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -150,15 +149,17 @@ class FewShotTests(unittest.TestCase):
         self.assertEqual(corpus_ids, [f"corpus-{i}" for i in self.ids["corpus_indices"]])
         self.assertTrue(12 <= len(corpus_ids) <= 18)  # roughly 15
 
-    def test_fewshot_outputs_validate_and_inputs_are_masked_corpus_text(self):
+    def test_fewshot_outputs_validate_and_inputs_are_corpus_text(self):
         expected = {c["corpus_index"]: c["expected"] for c in self.golden["cases"]}
         for example in self.fewshot["examples"]:
             with self.subTest(example["id"]):
                 Extraction.model_validate(example["output"])
-                self.assertEqual(outbound_text(example["input"]).text, example["input"])
                 if example["id"].startswith("corpus-"):
                     index = int(example["id"].split("-")[1])
-                    self.assertEqual(example["input"], outbound_text(self.corpus[index]).text)
+                    withheld = self.corpus[index].replace(
+                        "[REDACTED]", "[password withheld – see Telegram message]"
+                    )
+                    self.assertEqual(example["input"], withheld)
                     output = {f: example["output"][f] for f in EXTRACTED_FIELDS}
                     self.assertEqual(output, expected[index])
 

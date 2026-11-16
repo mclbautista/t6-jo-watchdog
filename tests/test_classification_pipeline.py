@@ -57,7 +57,7 @@ class VerdictTests(unittest.IsolatedAsyncioTestCase):
         findings = ledger.stage_result(KEY, "extract")["findings"]
         self.assertEqual(findings, [{"code": "unsure", "reasons": "Looks like unsure."}])
 
-    async def test_not_jo_is_ignored_with_masked_first_line(self):
+    async def test_not_jo_is_ignored_with_its_first_line_as_written(self):
         ledger, telegram, notion, _ = await self.run_one(
             ok_result("not_jo"), text="PW: hunter2 salamat po\nmore"
         )
@@ -68,7 +68,7 @@ class VerdictTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(telegram.reactions, [])
         (logged,) = rows(ledger, "SELECT * FROM ignore_log")
         self.assertEqual(logged["reason"], "not_jo")
-        self.assertNotIn("hunter2", logged["first_line"])
+        self.assertEqual(logged["first_line"], "PW: hunter2 salamat po")
         self.assertEqual(ledger.stage_result(KEY, "extract")["extraction"]["verdict"], "not_jo")
 
     async def test_no_text_bypasses_the_model(self):

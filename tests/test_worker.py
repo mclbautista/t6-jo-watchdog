@@ -26,7 +26,6 @@ def make_config(**overrides) -> Config:
         ops_chat_id=-100999,
         ops_topic_id=7,
         captured_reaction="✅",
-        job_orders_data_source_id="ds-1",
     )
     base.update(overrides)
     return Config(**base)

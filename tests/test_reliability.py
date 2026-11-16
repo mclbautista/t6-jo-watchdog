@@ -360,7 +360,7 @@ class RetryCommandTests(unittest.TestCase):
         self.config = self.dir / "config.yaml"
         self.config.write_text(
             "intake_chat_id: -100123\nintake_topic_id: 5\nops_chat_id: -100999\n"
-            "ops_topic_id: 7\njob_orders_data_source_id: ds-1\n"
+            "ops_topic_id: 7\n"
             f"ledger_path: {self.ledger_path}\n"
         )
         ledger = Ledger(self.ledger_path)
@@ -586,7 +586,6 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
                     "Flagged: 1",
                     "Ignored (not a JO): 1",
                     "No-text forwards: 1",
-                    "Passwords withheld: 1",
                     "Reaction failed: 0",
                     "",
                     "Deliverables linked: 0",
@@ -596,8 +595,8 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
                     "",
                     "Queue: 0 stuck, 0 pending retry, 0 ops posts failed",
                     "",
-                    "Ignored, first lines:",
-                    '"lunch at noon?"',
+                    "Ignored, message ids:",
+                    "13",
                 ]
             ),
         )

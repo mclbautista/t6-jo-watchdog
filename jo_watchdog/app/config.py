@@ -29,7 +29,6 @@ from pydantic import (
     model_validator,
 )
 
-from jo_watchdog.adapters.notion import NOTION_VERSION
 from jo_watchdog.core.resolve import ResolveSettings
 
 _HANDLE_RE = re.compile(r"^@?[A-Za-z0-9_]{5,32}$")
@@ -37,16 +36,9 @@ _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _NOTION_ID_RE = re.compile(
     r"^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
 )
-_NOTION_VERSION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Notion ids a live service must hold real, well-formed values for.
-_NOTION_ID_KEYS = (
-    "job_orders_data_source_id",
-    "contacts_data_source_id",
-    "projects_data_source_id",
-    "deliverables_data_source_id",
-    "standing_cc_contact_page_id",
-)
+_NOTION_ID_KEYS = ("standing_cc_contact_page_id",)
 _NON_EMPTY_KEYS = ("llm_model_hint", "ledger_path")
 
 # Keys the running service cannot do without; checked by ``require_live_keys``.
@@ -62,8 +54,6 @@ SECRET_KEYS = (
     "TELEGRAM_BOT_TOKEN",
     "T6_API_URL",
     "T6_API_SECRET",
-    "NOTION_API_KEY",
-    "OPENROUTER_API_KEY",
 )
 
 # Gateway mode (#95): the module secret replaces the Telegram token.
@@ -98,10 +88,6 @@ class Config(BaseModel):
     poll_timeout: int = Field(default=50, ge=1, le=50)  # Telegram long-poll seconds
     poll_interval: float = Field(default=1.0, gt=0)
 
-    # Notion
-    job_orders_data_source_id: str
-    notion_version: str = NOTION_VERSION
-
     # Classify/extract through the t6 API (``llm run``): the model the API's provider list
     # names (the "latest" alias, no pin), and how long to wait for the call. The API's own
     # provider timeout is 60 s, so a shorter wait here would cut off a call that is still running.
@@ -109,8 +95,6 @@ class Config(BaseModel):
     llm_timeout_seconds: float = Field(default=70, ge=70)
 
     # Live resolution caches (#22)
-    contacts_data_source_id: str = "77b2a701-71db-4e88-a694-37f07303e77e"
-    projects_data_source_id: str = "cc1dc02a-8f32-4c97-81e4-dc1e08d7f134"
     standing_cc_contact_page_id: str | None = None
     cache_refresh_hours: float = Field(default=6, gt=0)
     cache_stale_alert_hours: float = Field(default=24, gt=0)
@@ -133,7 +117,6 @@ class Config(BaseModel):
     timezone: str = "Asia/Manila"
 
     # Deliverable matching (the t6 API's ``llm decide``, #26, #147)
-    deliverables_data_source_id: str = "0a4ff084-3138-429c-8dbe-4d802aded74f"
     t_link: float = Field(default=0.90, ge=0, le=1)
     t_hint: float = Field(default=0.50, ge=0, le=1)
     deliverable_link_enabled: bool = False
@@ -224,8 +207,6 @@ def _production_problems(config: Config) -> list[str]:
     for key in _NON_EMPTY_KEYS:
         if not getattr(config, key).strip():
             problems.append(f"{key} must not be empty")
-    if not _NOTION_VERSION_RE.match(config.notion_version):
-        problems.append("notion_version must look like YYYY-MM-DD")
     for key in ("intake_topic_id", "ops_topic_id"):
         if getattr(config, key) <= 0:
             problems.append(f"{key} must be a positive topic id")
@@ -321,10 +302,3 @@ def t6_api_url() -> str:
 def t6_api_secret() -> str:
     return _secret("T6_API_SECRET")
 
-
-def notion_token() -> str:
-    return _secret("NOTION_API_KEY")
-
-
-def openrouter_token() -> str:
-    return _secret("OPENROUTER_API_KEY")

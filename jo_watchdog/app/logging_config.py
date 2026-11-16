@@ -1,4 +1,4 @@
-"""Masked JSON-lines logging to stdout and owner-protected rotated storage."""
+"""JSON-lines logging to stdout and owner-protected rotated storage."""
 
 from __future__ import annotations
 
@@ -11,25 +11,9 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import TextIO
 
-from jo_watchdog.core.masker import outbound_text
-
-
-class MaskingFilter(logging.Filter):
-    """Render arguments once, then mask every source-derived log message."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = outbound_text(record.getMessage()).text
-        record.args = ()
-        if record.stack_info:
-            record.stack_info = outbound_text(record.stack_info).text
-        return True
-
 
 class JsonFormatter(logging.Formatter):
     """Emit one compact, machine-readable object per record."""
-
-    def formatException(self, ei) -> str:  # noqa: N802
-        return outbound_text(super().formatException(ei)).text
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, str] = {
@@ -41,7 +25,7 @@ class JsonFormatter(logging.Formatter):
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         if record.stack_info:
-            payload["stack"] = outbound_text(record.stack_info).text
+            payload["stack"] = record.stack_info
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -68,7 +52,7 @@ def configure_logging(
     max_bytes: int = 5 * 1024 * 1024,
     backup_count: int = 5,
 ) -> None:
-    """Install masked JSON stdout and rotated persistent-file handlers."""
+    """Install JSON stdout and rotated persistent-file handlers."""
     path = Path(log_path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
@@ -77,7 +61,6 @@ def configure_logging(
         pass
 
     formatter = JsonFormatter()
-    masking_filter = MaskingFilter()
     stdout = logging.StreamHandler(stream if stream is not None else sys.stdout)
     persistent = OwnerOnlyRotatingFileHandler(
         path,
@@ -87,7 +70,6 @@ def configure_logging(
     )
     for handler in (stdout, persistent):
         handler.setFormatter(formatter)
-        handler.addFilter(masking_filter)
 
     root = logging.getLogger()
     for handler in root.handlers:

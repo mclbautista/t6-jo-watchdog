@@ -161,22 +161,6 @@ class DryRunReadOnlyTests(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertEqual(files_state(rig.dir), before)
 
-    def test_missing_mask_metadata_alone_is_refused_and_not_repaired(self):
-        rig = BackfillRig(self)
-        rig.ledger._conn.execute(
-            "INSERT INTO messages (chat_id, message_id, telegram_key, update_id, raw_source,"
-            " text, first_line, state, created_at, updated_at)"
-            " VALUES (-100, 1, '-100:1', 1, '{}', 'PW: old-secret', 'PW: old-secret',"
-            " 'received', 't', 't')"
-        )
-        before = files_state(rig.dir)
-        code, _, err = rig.run()
-        self.assertEqual(code, 2)
-        self.assertIn("masking metadata", err)
-        self.assertEqual(files_state(rig.dir), before)
-        row = rig.ledger._conn.execute("SELECT masked_text FROM messages").fetchone()
-        self.assertIsNone(row["masked_text"])
-
     def test_missing_ledger_is_an_error_and_creates_nothing(self):
         rig = BackfillRig(self)
         rig.ledger.close()

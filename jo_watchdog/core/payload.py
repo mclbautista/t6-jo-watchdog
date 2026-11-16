@@ -7,8 +7,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from jo_watchdog.core.masker import mask_text
-
 if TYPE_CHECKING:
     from jo_watchdog.core.job_order import JobOrderPlan
 
@@ -96,7 +94,7 @@ def build_raise_fields(plan: Any) -> dict[str, Any]:
                 value = _plain(properties.get(prop))
             if value:
                 fields[field] = value
-    body = "\n".join(mask_text(block) for block in plan.body_blocks)
+    body = "\n".join(plan.body_blocks)
     if body:
         fields["source_text"] = body
     return fields

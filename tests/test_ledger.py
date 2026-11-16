@@ -59,7 +59,7 @@ class SchemaTests(unittest.TestCase):
                 "INSERT INTO offsets (id, last_committed_offset) VALUES (2, 5)"
             )
 
-    def test_v1_database_migrates_and_backfills_mask_metadata(self):
+    def test_v1_database_migrates_and_keeps_its_rows_as_written(self):
         self.ledger.close()
         legacy_path = Path(self.tmp.name) / "legacy.db"
         connection = sqlite3.connect(legacy_path)
@@ -91,10 +91,10 @@ class SchemaTests(unittest.TestCase):
         self.ledger = Ledger(legacy_path)
         message = self.ledger.get_message("-100:1")
         assert message is not None
-        self.assertEqual(message["masked_count"], 1)
-        self.assertEqual(message["masker_version"], "1.0.0")
-        self.assertNotIn("legacy-secret", message["masked_text"])
-        self.assertNotIn("legacy-secret", message["plan_json"])
+        # The watchdog masks nothing: no masking metadata is made up for an old row.
+        self.assertIsNone(message["masked_count"])
+        self.assertEqual(message["text"], "PW: legacy-secret")
+        self.assertIn("legacy-secret", message["plan_json"])
 
 
 class AcceptMessageTests(unittest.TestCase):

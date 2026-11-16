@@ -18,7 +18,6 @@ from pydantic import BaseModel, Field
 
 from jo_watchdog.core.extraction import is_subtitle_value
 from jo_watchdog.core.findings import ASAP, Finding
-from jo_watchdog.core.masker import outbound_text
 from jo_watchdog.core.payload import STATUS_NEEDS_INTAKE_REVIEW
 from jo_watchdog.core.plan import (
     BLOCK_LIMIT,
@@ -269,21 +268,21 @@ def rich_text(value: str) -> list[dict]:
 
 
 def _clean(value: str | None) -> str:
-    """Trim a verbatim field and mask it; absent values stay blank."""
+    """Trim a verbatim field; absent values stay blank."""
     if value is None:
         return ""
-    return outbound_text(value.replace("\xa0", " ").strip()).text
+    return value.replace("\xa0", " ").strip()
 
 
 def _verbatim(value: str | None) -> str:
-    """Mask a verbatim field but keep its whitespace and NBSP; trimming only decides emptiness."""
+    """A verbatim field with its whitespace and NBSP; trimming only decides emptiness."""
     if value is None or not value.strip():
         return ""
-    return outbound_text(value).text
+    return value
 
 
 def build_notes(poster_notes: str | None) -> str:
-    """The coordinator's own notes, verbatim (masked), for the ``Notes`` column."""
+    """The coordinator's own notes, verbatim, for the ``Notes`` column."""
     return _verbatim(poster_notes)
 
 
@@ -316,8 +315,8 @@ def plan_job_order(
     ``rules`` is the API's answer for the message (the ``jo raise`` preview): the plan takes
     its Name, number, Department, deadline and keys as they are. ``posted_at`` is the intake
     posting or forwarding time, never the forwarded original's time. ``source_block`` is the
-    rendered provenance block (#24's ``provenance.source_block``); it is masked here like all
-    source text.
+    rendered provenance block (#24's ``provenance.source_block``). The API withholds credentials
+    from what it writes, so the text is kept as posted.
     """
     name = rules.name or ""
     key = rules.telegram_key or telegram_key
@@ -355,8 +354,8 @@ def plan_job_order(
         properties[WATCHDOG_NOTES_PROPERTY] = {"rich_text": rich_text(watchdog_notes)}
 
     body = [
-        *split_blocks(outbound_text(source_block).text),
-        *split_blocks(outbound_text(raw_text).text),
+        *split_blocks(source_block),
+        *split_blocks(raw_text),
     ]
 
     return JobOrderPlan(

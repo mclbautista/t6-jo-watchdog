@@ -90,7 +90,6 @@ class ResolvedBy(unittest.IsolatedAsyncioTestCase):
             intake_topic_id=5,
             ops_chat_id=-100999,
             ops_topic_id=7,
-            job_orders_data_source_id="ds-1",
             standing_cc_contact_page_id=PRIYA,
         )
         self.caches = CacheManager(

@@ -21,7 +21,6 @@ from tests.fakes import (
     update,
 )
 
-JOB_ORDERS = "3d8fb4d5-9e59-8073-a0d0-000b77632947"
 PRIYA = "c0000000-0000-4000-8000-000000000001"
 
 
@@ -31,7 +30,6 @@ def config(**overrides) -> Config:
         intake_topic_id=5,
         ops_chat_id=-100999,
         ops_topic_id=7,
-        job_orders_data_source_id=JOB_ORDERS,
         standing_cc_contact_page_id=PRIYA,
     )
     values.update(overrides)

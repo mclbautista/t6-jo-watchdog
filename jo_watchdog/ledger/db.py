@@ -27,8 +27,6 @@ from pathlib import Path
 from typing import NamedTuple
 
 from jo_watchdog.core.duplicates import text_sha256
-from jo_watchdog.core.masker import outbound_text
-from jo_watchdog.core.plan import build_plan
 from jo_watchdog.ledger.migrations import (
     MIGRATION_10_GATEWAY_ROWS,
     MIGRATIONS,
@@ -70,7 +68,7 @@ def _check_kind(report: OutboxMessage) -> None:
 
 
 class OutboxMessage(NamedTuple):
-    """One rendered, masked ops post waiting to be inserted into ``outbox``."""
+    """One rendered ops post waiting to be inserted into ``outbox``."""
 
     kind: str
     chat_id: int
@@ -186,15 +184,6 @@ class Ledger:
                 f"the ledger is out of date (migrations pending: {pending}); "
                 "start the watchdog once to upgrade it, then dry-run again"
             )
-        stale = self._conn.execute(
-            "SELECT 1 FROM messages WHERE masked_text IS NULL OR masker_version IS NULL"
-            " OR masked_count IS NULL LIMIT 1"
-        ).fetchone()
-        if stale:
-            raise LedgerNotReady(
-                "the ledger is out of date (masking metadata missing); "
-                "start the watchdog once to upgrade it, then dry-run again"
-            )
 
     def __init__(
         self,
@@ -236,7 +225,6 @@ class Ledger:
         if apply_migrations:
             try:
                 self._migrate()
-                self._backfill_mask_metadata()
             except BaseException:
                 self._conn.close()
                 raise
@@ -303,34 +291,6 @@ class Ledger:
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
         ).fetchone()
         return row is not None
-
-    def _backfill_mask_metadata(self) -> None:
-        """Make pre-v1 rows reproducible and remove raw text from stored plans."""
-        rows = self._conn.execute(
-            "SELECT id, telegram_key, text, plan_json FROM messages"
-            " WHERE masked_text IS NULL OR masker_version IS NULL OR masked_count IS NULL"
-        ).fetchall()
-        if not rows:
-            return
-        with self._transaction():
-            for row in rows:
-                masked = outbound_text(row["text"])
-                plan_json = row["plan_json"]
-                if plan_json is not None:
-                    old_plan = json.loads(plan_json)
-                    plan = build_plan(old_plan["name"], row["telegram_key"], row["text"])
-                    plan_json = plan.model_dump_json()
-                self._conn.execute(
-                    "UPDATE messages SET masked_text = ?, masker_version = ?,"
-                    " masked_count = ?, plan_json = ? WHERE id = ?",
-                    (
-                        masked.text,
-                        masked.masker_version,
-                        masked.withheld_count,
-                        plan_json,
-                        row["id"],
-                    ),
-                )
 
     @contextmanager
     def _transaction(self):
@@ -472,13 +432,12 @@ class Ledger:
     ) -> tuple[str, int | None]:
         key = telegram_key(chat_id, message_id)
         now = _now()
-        masked = outbound_text(text)
         cur = self._conn.execute(
             "INSERT INTO messages"
             " (chat_id, message_id, telegram_key, update_id, raw_source, text,"
-            "  first_line, masked_text, masker_version, masked_count, state,"
+            "  first_line, state,"
             "  posted_at, text_sha256, forward_origin_type, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 chat_id,
                 message_id,
@@ -487,9 +446,6 @@ class Ledger:
                 raw_source,
                 text,
                 first_line,
-                masked.text,
-                masked.masker_version,
-                masked.withheld_count,
                 State.RECEIVED.value,
                 posted_at,
                 text_sha256(text),
@@ -573,7 +529,7 @@ class Ledger:
                 call.get("output_tokens"),
                 call.get("latency_ms"),
                 call["outcome"],
-                outbound_text(call["error"]).text if call.get("error") else None,
+                call.get("error") or None,
                 call.get("detail_json"),
                 now,
             ),
@@ -615,7 +571,7 @@ class Ledger:
                 row["message_id"],
                 row["update_id"],
                 reason,
-                outbound_text(row["first_line"]).text,
+                row["first_line"],
                 now,
             ),
         )
@@ -624,7 +580,7 @@ class Ledger:
         """Store a validated extraction, its trace, and the verdict's next state atomically.
 
         ``jo`` and ``unsure`` move to ``extracted``; ``not_jo`` moves to ``ignored``
-        and gets an ``ignore_log`` row with the masked first line.
+        and gets an ``ignore_log`` row with the first line.
         """
         verdict = result["extraction"]["verdict"]
         to_state = State.IGNORED if verdict == "not_jo" else State.EXTRACTED
@@ -690,10 +646,9 @@ class Ledger:
         ``len(schedule) + 1`` attempts in all. The delay after the Nth failure
         is ``schedule[N-1]``, stretched to a provider's ``Retry-After`` when
         that is longer. The failure of the last attempt sets ``exhausted_at`` and
-        queues the one outage alert (``on_exhausted(masked_error, attempts)``) in
+        queues the one outage alert (``on_exhausted(error, attempts)``) in
         the same transaction. The row keeps its state and stored plan; nothing is deleted.
         """
-        masked = outbound_text(error).text
         stamp = fmt_utc(now)
         with self._transaction():
             row = self._conn.execute(
@@ -713,10 +668,10 @@ class Ledger:
             self._conn.execute(
                 "UPDATE messages SET attempts = ?, next_attempt_at = ?, last_error = ?,"
                 " exhausted_at = ?, updated_at = ? WHERE id = ?",
-                (attempts, next_at, masked, stamp if exhausted else None, _now(), row["id"]),
+                (attempts, next_at, error, stamp if exhausted else None, _now(), row["id"]),
             )
             if exhausted and on_exhausted is not None:
-                alert = on_exhausted(masked, attempts)
+                alert = on_exhausted(error, attempts)
                 _check_kind(alert)
                 self._insert_outbox(alert, message_row_id=row["id"], now=stamp)
         self._protect_files()
@@ -909,18 +864,12 @@ class Ledger:
             ),
             "ignored": one(f"SELECT COUNT(*) {ignored}", "not_jo", start, end),
             "no_text": one(f"SELECT COUNT(*) {ignored}", "no_text", start, end),
-            "ignored_first_lines": [
+            "ignored_message_ids": [
                 r[0]
                 for r in self._conn.execute(
-                    f"SELECT first_line {ignored} ORDER BY id DESC LIMIT 5", ("not_jo", start, end)
+                    f"SELECT message_id {ignored} ORDER BY id DESC LIMIT 5", ("not_jo", start, end)
                 )
             ],
-            "passwords_withheld": one(
-                "SELECT COUNT(*) FROM messages WHERE masked_count > 0"
-                " AND created_at >= ? AND created_at < ?",
-                start,
-                end,
-            ),
             "reaction_failed": one(
                 "SELECT COUNT(*) FROM messages WHERE reaction_state = 'failed'"
                 " AND updated_at >= ? AND updated_at < ?",
@@ -955,13 +904,12 @@ class Ledger:
         """
         if alert is not None:
             _check_kind(alert)
-        safe_first_line = outbound_text(first_line).text
         with self._transaction():
             self._conn.execute(
                 "INSERT INTO ignore_log"
                 " (chat_id, message_id, update_id, reason, first_line, created_at)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
-                (chat_id, message_id, update_id, reason, safe_first_line, _now()),
+                (chat_id, message_id, update_id, reason, first_line, _now()),
             )
             if alert is not None:
                 self._insert_outbox(alert, message_row_id=None, now=_now())
@@ -1290,7 +1238,7 @@ class Ledger:
             "UPDATE outbox SET state = 'failed', telegram_message_id = NULL,"
             " next_attempt_at = NULL, last_error = ?"
             f" WHERE id = ? AND {self._UNRECONCILED}",
-            (outbound_text(error).text, outbox_id),
+            (error, outbox_id),
         )
         return cur.rowcount == 1
 
@@ -1308,7 +1256,7 @@ class Ledger:
             cur = self._conn.execute(
                 "UPDATE outbox SET state = 'failed', next_attempt_at = NULL, last_error = ?"
                 " WHERE id = ? AND state = 'accepted'",
-                (outbound_text(error).text, outbox_id),
+                (error, outbox_id),
             )
             if cur.rowcount == 0:
                 return False
@@ -1353,7 +1301,7 @@ class Ledger:
         self._conn.execute(
             "UPDATE outbox SET state = ?, attempts = ?, next_attempt_at = ?, last_error = ?"
             " WHERE id = ?",
-            (state, attempts, next_at, outbound_text(error).text, outbox_id),
+            (state, attempts, next_at, error, outbox_id),
         )
         return state
 

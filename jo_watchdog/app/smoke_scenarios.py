@@ -1,7 +1,7 @@
 """Controlled operational-failure scenarios for ``smoke.py`` (#62).
 
 Each scenario builds the production worker through ``build_worker`` on a throwaway
-SQLite ledger, with scripted stand-ins for Telegram, Notion, the classifier and Jev
+SQLite ledger, with scripted stand-ins for Telegram, the t6 API, the classifier and the matcher
 and a fake clock, then provokes one failure or mode and checks what the ledger,
 the outbox and the stand-ins recorded. Nothing here touches the network, the
 service's ledger or a real account, so it needs no secrets and leaves nothing to
@@ -31,7 +31,6 @@ from jo_watchdog.app.wiring import Adapters, build_worker, missing_wiring
 from jo_watchdog.core.extraction import EXTRACTED_FIELDS, PROMPT_TAG, Extraction
 from jo_watchdog.core.heartbeat import heartbeat_window
 from jo_watchdog.core.job_order import RaisePreview
-from jo_watchdog.core.masker import outbound_text
 from jo_watchdog.core.matching import Candidate, CandidateDecision, MatchResult
 from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
 from jo_watchdog.ledger.db import Ledger, fmt_utc
@@ -236,7 +235,7 @@ class Harness:
         self.matcher = matcher
         self.ledger = Ledger(Path(tmp) / "scenario.db")
         adapters = Adapters(
-            telegram=self.telegram, notion=self.notion, t6api=self.notion,
+            telegram=self.telegram, t6api=self.notion,
             classifier=FixedClassifier(),
             matcher=matcher,
         )
@@ -330,7 +329,7 @@ async def _scenario(
                 else:
                     await body(harness, checks)
             except Exception as exc:  # a crashed pipeline is a failed scenario, not a crash
-                checks.failures.append(f"{type(exc).__name__}: {outbound_text(str(exc)).text}")
+                checks.failures.append(f"{type(exc).__name__}: {exc}")
             finally:
                 posts = [text for _, _, text in harness.telegram.sent]
                 harness.close()
@@ -544,7 +543,7 @@ async def shadow_mode(config: Config) -> ScenarioRun:
 
 
 async def dry_run(config: Config) -> ScenarioRun:
-    """Dry-run holds at `planned`: one masked plan post, no Notion call, no reaction."""
+    """Dry-run holds at `planned`: one plan post, no Job Order raise, no reaction."""
 
     async def body(h: Harness, c: Checks) -> None:
         await h.worker.run_once()

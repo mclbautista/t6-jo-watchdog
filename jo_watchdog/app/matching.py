@@ -19,7 +19,6 @@ from pydantic import BaseModel, Field
 from jo_watchdog.adapters.protocols import DeliverableMatcher, DeliverableSource
 from jo_watchdog.adapters.t6decide import PROMPT_TAG, REQUESTED_MODEL, MatcherError
 from jo_watchdog.app.config import Config
-from jo_watchdog.core.masker import MASKER_VERSION, mask_text, outbound_text
 from jo_watchdog.core.matching import (
     MATCHER_SKIPPED_LINE,
     Candidate,
@@ -32,6 +31,8 @@ from jo_watchdog.core.matching import (
 )
 
 MAX_ATTEMPTS = 2  # the call plus one inline retry
+# The model inputs are masked by the t6 API, not by the watchdog; ``llm_calls`` records who.
+MASKED_BY = "t6-api"
 
 Sleep = Callable[[float], Awaitable[None]]
 
@@ -54,7 +55,7 @@ class LlmCallRecord(BaseModel):
     requested_model: str
     returned_model: str | None = None
     prompt_tag: str
-    masker_version: str = MASKER_VERSION
+    masker_version: str = MASKED_BY
     input_tokens: int | None = None
     output_tokens: int | None = None
     latency_ms: int
@@ -128,13 +129,12 @@ async def run_match_stage(
             project=project,
         )
 
-    state = outbound_text(source_text).text
     calls: list[LlmCallRecord] = []
     for attempt in range(MAX_ATTEMPTS):
         started = clock()
         result: MatchResult | None = None
         try:
-            result = await matcher.match(state, project.name, candidates)
+            result = await matcher.match(source_text, project.name, candidates)
             decision = decide(
                 candidates,
                 result,
@@ -235,6 +235,6 @@ def _failed_call(
         output_tokens=result.output_tokens if result else None,
         latency_ms=round(elapsed * 1000),
         outcome=failure,
-        error=mask_text(str(exc))[:500],
+        error=str(exc)[:500],
         detail_json=_detail(project, candidates, result),
     )

@@ -1,9 +1,9 @@
 """Entry point: ``python -m jo_watchdog.app [run|healthcheck|retry] --config config.yaml``.
 
-``run`` (the default) builds the real adapters (aiogram Telegram, httpx Notion)
+``run`` (the default) builds the real adapters (aiogram Telegram, the t6 API)
 and the ledger, then runs the worker loop. Secrets come from the environment
 (``TELEGRAM_BOT_TOKEN`` or, with ``telegram_mode: gateway``, ``WATCHDOG_SECRET``;
-``T6_API_URL``, ``T6_API_SECRET``, ``NOTION_API_KEY``, ``OPENROUTER_API_KEY``); non-secrets
+``T6_API_URL``, ``T6_API_SECRET``); non-secrets
 come from the YAML config.
 
 ``retry <telegram_key>`` (or ``retry --all-exhausted``) makes exhausted messages

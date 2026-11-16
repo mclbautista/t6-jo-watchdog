@@ -18,7 +18,7 @@ from jo_watchdog.ledger.db import Ledger
 PASS, FAIL, SKIP, MANUAL, ATTESTED = "PASS", "FAIL", "SKIP", "MANUAL", "ATTESTED"
 
 # Steps a full verification does not need: both are opt-in probes with side effects.
-OPTIONAL_STEPS = frozenset({"unknown_select", "live_telegram"})
+OPTIONAL_STEPS = frozenset({"live_telegram"})
 
 
 @dataclass
@@ -73,7 +73,7 @@ async def verify_capture(
     if msg["state"] != "done":
         detail = f"{key} stopped at {msg['state']}"
         if msg.get("last_error"):
-            detail += f"; last error (masked): {msg['last_error']}"
+            detail += f"; last error: {msg['last_error']}"
         return Result(FAIL, detail)
     if msg["readback_mismatch"]:
         return Result(FAIL, f"{key} read-back mismatch: {msg['readback_mismatch']}")

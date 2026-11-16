@@ -31,7 +31,12 @@ from jo_watchdog.adapters.protocols import (
 from jo_watchdog.adapters.t6api import KeyAlreadyHeld, T6ApiError, raise_input
 from jo_watchdog.app.caches import CacheManager
 from jo_watchdog.app.config import Config
-from jo_watchdog.app.matching import ResolvedProject, run_match_stage, with_deliverable
+from jo_watchdog.app.matching import (
+    MASKED_BY,
+    ResolvedProject,
+    run_match_stage,
+    with_deliverable,
+)
 from jo_watchdog.core.duplicates import (
     EarlierCapture,
     add_earlier_row_line,
@@ -48,7 +53,6 @@ from jo_watchdog.core.job_order import (
     load_plan,
     plan_job_order,
 )
-from jo_watchdog.core.masker import outbound_text
 from jo_watchdog.core.payload import (
     page_url_for,
     readback_fields,
@@ -90,7 +94,6 @@ REACTION_RETRY_SECONDS = (2, 5)
 DEADMAN_CHECK_SECONDS = 30.0
 
 # The extraction input is masked by the t6 API (``llm run``), not by the watchdog.
-MASKED_BY = "t6-api"
 
 CLASSIFICATION = "Classification"
 NOTION_WRITE = "Notion write"
@@ -527,7 +530,7 @@ class Worker:
                 log.warning("t6 API cannot match %s yet; holding: %s", key, exc)
                 return None
         raise_message = JoRaiseMessage(
-            header_text=outbound_text(header_text).text,
+            header_text=header_text,
             deadline_text=extraction.deadline_raw or "",
             posted_at=posted_at,
             chat_id=str(msg["chat_id"]),
@@ -589,7 +592,7 @@ class Worker:
             matcher=self.matcher,
             deliverables=self.deliverables,
             config=self.config,
-            source_text=msg["masked_text"],
+            source_text=msg["text"],
             project=project,
             sleep=self.sleep,
         )
@@ -1049,7 +1052,7 @@ class Worker:
                 text=render_heartbeat_failed_alert(
                     window_start=window[0],
                     window_end=window[1],
-                    error=outbound_text(error).text,
+                    error=error,
                     owner_handle=self.config.owner_telegram_handle,
                 ),
             )
@@ -1060,7 +1063,7 @@ class Worker:
                 row["id"],
                 row["kind"],
                 row["gateway_ref"],
-                outbound_text(error).text,
+                error,
             )
 
     def _warn_if_stuck(self, row: dict) -> None:

@@ -41,7 +41,6 @@ class LedgerFiles(unittest.TestCase):
                     "intake_topic_id": 5,
                     "ops_chat_id": -100999,
                     "ops_topic_id": 9,
-                    "job_orders_data_source_id": "ds-1",
                     "ledger_path": str(self.db),
                 }
             ),
@@ -92,8 +91,6 @@ class StartupIntegrityTests(LedgerFiles):
             "TELEGRAM_BOT_TOKEN": "t",
             "T6_API_URL": "http://t6.test",
             "T6_API_SECRET": "s",
-            "NOTION_API_KEY": "n",
-            "OPENROUTER_API_KEY": "o",
         }
         with (
             unittest.mock.patch.dict("os.environ", env),

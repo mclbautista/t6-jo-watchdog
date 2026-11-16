@@ -24,7 +24,6 @@ MINIMAL = dict(
     intake_topic_id=5,
     ops_chat_id=-100999,
     ops_topic_id=9,
-    job_orders_data_source_id="ds-1",
 )
 
 
@@ -71,6 +70,11 @@ class ValidationTests(unittest.TestCase):
             {"fuzzy_min_lead": 8},
             {"honorifics": ["ate"]},
             {"llm_timeout_seconds": 60},  # the API waits up to 60 s for the provider
+            {"job_orders_data_source_id": "ds-1"},  # removed with the Notion client (#143)
+            {"contacts_data_source_id": "ds-1"},
+            {"projects_data_source_id": "ds-1"},
+            {"deliverables_data_source_id": "ds-1"},
+            {"notion_version": "2026-03-11"},
             {"deepseek_base_url": "x"},  # removed with the DeepSeek client
             {"jev_url": "https://x.example"},  # removed with the Jev client (#147)
             {"jev_model": "x"},
@@ -110,7 +114,6 @@ LIVE = dict(
     standing_cc_contact_page_id="c0000000-0000-4000-8000-0000000000cc",
     standing_cc_telegram_handle="@priya",
     owner_telegram_handle="@cyril_owner",
-    job_orders_data_source_id="3d8fb4d5-9e59-8073-a0d0-000b77632947",
 )
 
 
@@ -122,23 +125,17 @@ class ProductionReadinessTests(unittest.TestCase):
     def test_valid_configuration_boots(self):
         require_live_keys(live())
         require_live_keys(live(standing_cc_contact_page_id="c00000000000400080000000000000cc"))
-        require_live_keys(live(notion_version="2027-01-31"))
 
     def test_negative_group_chat_ids_are_legitimate(self):
         require_live_keys(live(intake_chat_id=-1001234567890, ops_chat_id=-4242))
 
     def test_audited_invalid_values_are_rejected(self):
         bad = {
-            "job_orders_data_source_id": ["", "ds-1", "not-a-uuid"],
-            "contacts_data_source_id": ["", "xyz"],
-            "projects_data_source_id": [""],
-            "deliverables_data_source_id": [""],
             "standing_cc_contact_page_id": ["", "short"],
             "intake_topic_id": [-5],
             "ops_topic_id": [-1],
             "llm_model_hint": ["", "  "],
             "ledger_path": ["", " "],
-            "notion_version": ["", "latest", "2026-3-1"],
         }
         for key, values in bad.items():
             for value in values:
@@ -149,10 +146,10 @@ class ProductionReadinessTests(unittest.TestCase):
 
     def test_all_problems_are_reported_without_values(self):
         with self.assertRaises(ValueError) as ctx:
-            require_live_keys(live(intake_topic_id=-7, notion_version="secret-looking-value"))
+            require_live_keys(live(intake_topic_id=-7, standing_cc_contact_page_id="secret-looking-value"))
         message = str(ctx.exception)
         self.assertIn("intake_topic_id", message)
-        self.assertIn("notion_version", message)
+        self.assertIn("standing_cc_contact_page_id", message)
         self.assertNotIn("secret-looking-value", message)
 
     def test_placeholders_are_distinct_from_readiness(self):

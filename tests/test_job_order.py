@@ -22,7 +22,6 @@ from jo_watchdog.core.job_order import (
 from jo_watchdog.core.payload import build_raise_fields
 
 POSTED = datetime(2026, 9, 15, 10, 0, tzinfo=MANILA)
-WITHHELD = "[password withheld – see Telegram message]"
 
 FIELDS = [
     "header_raw", "jo_number_raw", "project_raw", "department_raw", "title", "task", "purpose",
@@ -295,11 +294,11 @@ class FieldTests(unittest.TestCase):
         self.assertNotIn("Deadline", p.properties)
         self.assertEqual(p.deadline_source, "blank")
 
-    def test_body_is_source_block_then_masked_raw_text(self):
+    def test_body_is_source_block_then_raw_text(self):
         p = plan(extraction(), raw_text="MFG - TOC - JO #74\nPW: secret")
         self.assertEqual(
             p.body_blocks,
-            ["Posted by: Priya (@priya)", f"MFG - TOC - JO #74\nPW: {WITHHELD}"],
+            ["Posted by: Priya (@priya)", "MFG - TOC - JO #74\nPW: secret"],
         )
 
     def test_long_raw_text_splits_into_2000_character_blocks(self):
@@ -330,8 +329,8 @@ class NotesTests(unittest.TestCase):
         self.assertEqual(build_watchdog_notes(None, False), "")
         self.assertEqual(build_watchdog_notes("  ", False), "")
 
-    def test_notes_are_masked(self):
-        self.assertEqual(build_notes("pw: abc"), f"pw: {WITHHELD}")
+    def test_notes_are_kept_as_posted(self):
+        self.assertEqual(build_notes("pw: abc"), "pw: abc")
 
     def test_plan_notes_keep_hedges_and_asap(self):
         p = plan(

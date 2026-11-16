@@ -1,6 +1,5 @@
 # Non-secret configuration. Copy to config.yaml and fill in the real values.
-# Secrets (TELEGRAM_BOT_TOKEN, T6_API_SECRET, NOTION_API_KEY,
-# OPENROUTER_API_KEY) go in .env, never here.
+# Secrets (TELEGRAM_BOT_TOKEN, T6_API_SECRET) go in .env, never here.
 #
 # Every key is validated at startup; a bad or unknown key fails the boot.
 # Values marked FILL IN are placeholders the service must not run with.
@@ -20,10 +19,6 @@ gateway_url: null                   # gateway mode only, e.g. "http://192.168.88
 poll_timeout: 50                    # Telegram long-poll timeout (seconds, max 50)
 poll_interval: 1.0                  # pause between poll+drain cycles (seconds)
 
-# --- Notion (#18) ---
-job_orders_data_source_id: "3d8fb4d5-9e59-8073-a0d0-000b77632947"
-notion_version: "2026-03-11"        # pinned API version (do not change casually)
-
 # --- Ledger (#18) ---
 ledger_path: "./data/ledger.db"     # the container uses /app/data (a named volume)
 
@@ -37,8 +32,6 @@ llm_timeout_seconds: 70             # at least 70: the API waits up to 60 s for 
 raise_poll_seconds: 60              # how long to wait for the page of a raised Job Order
 
 # --- Resolution and caches (#22) ---
-contacts_data_source_id: "77b2a701-71db-4e88-a694-37f07303e77e"
-projects_data_source_id: "cc1dc02a-8f32-4c97-81e4-dc1e08d7f134"
 standing_cc_contact_page_id: "00000000-0000-0000-0000-000000000000"  # FILL IN: Contacts page id of the standing cc on every JO
 cache_refresh_hours: 6
 cache_stale_alert_hours: 24
@@ -58,7 +51,6 @@ heartbeat_time: "07:00"
 timezone: "Asia/Manila"
 
 # --- Deliverable matching through the t6 API's `llm decide` (#26, #147) ---
-deliverables_data_source_id: "0a4ff084-3138-429c-8dbe-4d802aded74f"
 t_link: 0.90
 t_hint: 0.50
 deliverable_link_enabled: false     # shadow mode until the owner turns it on

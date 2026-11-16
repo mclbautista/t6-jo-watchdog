@@ -15,7 +15,6 @@ from jo_watchdog.adapters.t6decide import MatcherError, T6DecideMatcher
 from jo_watchdog.app.config import Config
 from jo_watchdog.app.matching import ResolvedProject, run_match_stage, with_deliverable
 from jo_watchdog.core.job_order import JobOrderPlan
-from jo_watchdog.core.masker import WITHHELD
 from jo_watchdog.core.matching import Candidate, CandidateDecision, MatchResult
 from tests.fakes import FakeDecideClient, FakeJobOrders
 
@@ -37,7 +36,6 @@ def config(**overrides) -> Config:
         intake_topic_id=5,
         ops_chat_id=-100456,
         ops_topic_id=7,
-        job_orders_data_source_id="ds-jo",
         **overrides,
     )
 
@@ -124,12 +122,12 @@ class EligibilityTests(unittest.IsolatedAsyncioTestCase):
         await stage(FakeMatcher(LINKABLE), source)
         self.assertEqual(source.calls, ["proj-1"])
 
-    async def test_jev_gets_masked_text_and_project_name(self):
+    async def test_the_matcher_gets_the_text_as_posted_and_the_project_name(self):
+        # The t6 API masks the registered names and withholds the credentials.
         jev = FakeMatcher(LINKABLE)
         await stage(jev, text="Task: upload\nPW: hunter2-secret")
         state, project_name, candidates = jev.calls[0]
-        self.assertNotIn("hunter2-secret", state)
-        self.assertIn(WITHHELD, state)
+        self.assertEqual(state, "Task: upload\nPW: hunter2-secret")
         self.assertEqual(project_name, "Moonglow")
         self.assertEqual(candidates, CANDS)
 
@@ -222,9 +220,9 @@ class FailureTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([f.code for f in result.findings], ["matcher_skipped"])
 
-    async def test_failure_error_text_is_masked(self):
-        result = await stage(FakeMatcher(RuntimeError("PW: leaked-secret"), RuntimeError("x")))
-        self.assertNotIn("leaked-secret", result.llm_calls[0].error)
+    async def test_failure_error_text_is_the_failure_cut_to_500_characters(self):
+        result = await stage(FakeMatcher(RuntimeError("x" * 900), RuntimeError("y")))
+        self.assertEqual(result.llm_calls[0].error, "x" * 500)
 
 
 class StorageTests(unittest.IsolatedAsyncioTestCase):
