@@ -3,7 +3,6 @@
 import json
 import re
 import unittest
-from datetime import time
 from pathlib import Path
 
 from jo_watchdog.app.caches import department_options, person_from_page, project_from_page
@@ -13,7 +12,6 @@ from jo_watchdog.core.resolve import (
     Person,
     ResolveSettings,
     normalize_name,
-    parse_end_of_shift,
     relation_properties,
     resolve_department,
     resolve_mention,
@@ -85,15 +83,6 @@ class NormalizationTests(unittest.TestCase):
     def test_honorifics_dropped_on_mention_side(self):
         for raw in ("ate Lena", "Ate LENA", "sir lena", "kuya  Lena"):
             self.assertEqual(normalize_name(raw), "lena")
-
-    def test_end_of_shift_parsing(self):
-        self.assertEqual(parse_end_of_shift("10:00 PM"), time(22, 0))
-        self.assertEqual(parse_end_of_shift("12:00 AM"), time(0, 0))
-        self.assertEqual(parse_end_of_shift("12:00 PM"), time(12, 0))
-        self.assertEqual(parse_end_of_shift("6:00 AM"), time(6, 0))
-        self.assertIsNone(parse_end_of_shift("Flexible / Variable"))
-        self.assertIsNone(parse_end_of_shift(""))
-        self.assertIsNone(parse_end_of_shift(None))
 
 
 class MentionSplittingTests(unittest.TestCase):
@@ -274,13 +263,13 @@ class ResolvePeopleTests(unittest.TestCase):
 
     def test_assignee_shifts_feed_deadline_resolver(self):
         out = resolve_people("Ramon, Mira / ate Lena", None, people(), SETTINGS)
-        shifts = [(s.name, s.end_of_shift, s.shift_time) for s in out.assignee_shifts]
+        shifts = [(s.name, s.end_of_shift) for s in out.assignee_shifts]
         self.assertEqual(
             shifts,
             [
-                ("Ramon Reyes", "10:00 PM", time(22, 0)),
-                ("Mira Santos", "6:00 AM", time(6, 0)),
-                ("Lena Cruz", "Flexible / Variable", None),
+                ("Ramon Reyes", "10:00 PM"),
+                ("Mira Santos", "6:00 AM"),
+                ("Lena Cruz", "Flexible / Variable"),
             ],
         )
 

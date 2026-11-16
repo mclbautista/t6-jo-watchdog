@@ -7,6 +7,7 @@ posting time and extraction stand-in.
 
 import json
 import unittest
+from dataclasses import asdict
 from datetime import datetime
 
 from jo_watchdog.core.header import parse_header
@@ -39,7 +40,7 @@ class CorpusHeaderGoldenTests(unittest.TestCase):
         for header_raw, expected in golden.items():
             with self.subTest(header=header_raw):
                 header = parse_header(header_raw, ALIASES)
-                actual = None if header is None else header.model_dump()
+                actual = None if header is None else asdict(header)
                 self.assertEqual(actual, expected)
 
 

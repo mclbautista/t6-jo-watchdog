@@ -146,7 +146,7 @@ def evaluate_owner_handle(
     """MANUAL until a person attests; an attestation must name both configured handles."""
     handles = [h for h in (owner, priya) if _handle(h)]
     ask = (
-        f"confirm {owner} (owner) and {priya} (Priya) are the real handles; "
+        f"confirm {owner} (owner) and {priya} (standing cc) are the real handles; "
         "the Bot API cannot look a handle up. Record it with --attestations "
         "(scope must name both handles)"
     )

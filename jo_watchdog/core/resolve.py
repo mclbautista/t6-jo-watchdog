@@ -13,13 +13,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import time
 
 from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
 
 DEFAULT_HONORIFICS = ("ate", "kuya", "sir")
-FLEXIBLE_SHIFT = "Flexible / Variable"
 
 # Mention separators: commas, slashes, ampersands, " and ", and line breaks.
 _SPLIT_RE = re.compile(r"\s*(?:,|/|&|\n|\band\b)\s*", re.IGNORECASE)
@@ -30,7 +28,6 @@ _COURTESY_TAIL_RE = re.compile(
     r"(?:[\s,!.]+|^)(?:thank\w*|ty(?:vm+)?|you+\w*|u|po)[\s,!.]*$", re.IGNORECASE
 )
 _HANDLE_RE = re.compile(r"@([A-Za-z0-9_]{3,})")
-_SHIFT_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*([AaPp][Mm])\s*$")
 
 
 # -- snapshot models ---------------------------------------------------------
@@ -102,10 +99,6 @@ class AssigneeShift(BaseModel):
     name: str
     end_of_shift: str  # the raw select value: "10:00 PM", "Flexible / Variable" or ""
 
-    @property
-    def shift_time(self) -> time | None:
-        return parse_end_of_shift(self.end_of_shift)
-
 
 class PeopleResolution(BaseModel):
     """Relation values and findings for Assigned and cc."""
@@ -157,19 +150,6 @@ def split_aliases(aliases: str, honorifics: Iterable[str] = DEFAULT_HONORIFICS) 
         if norm:
             out.append(norm)
     return out
-
-
-def parse_end_of_shift(value: str | None) -> time | None:
-    """Parse a Contacts ``End of Shift`` option (``10:00 PM``); None when blank or flexible."""
-    if not value or value.strip() == FLEXIBLE_SHIFT:
-        return None
-    m = _SHIFT_RE.match(value)
-    if not m:
-        return None
-    hour, minute, meridiem = int(m.group(1)) % 12, int(m.group(2)), m.group(3).lower()
-    if meridiem == "pm":
-        hour += 12
-    return time(hour, minute)
 
 
 def _strip_courtesy(segment: str) -> str:
@@ -413,7 +393,7 @@ def resolve_people(
     settings: ResolveSettings,
     entities: Sequence[MentionEntity] = (),
 ) -> PeopleResolution:
-    """Resolve Assigned and cc. Priya is always in cc; Coordinator stays blank."""
+    """Resolve Assigned and cc. The standing cc is always in cc; Coordinator stays blank."""
     index = people if isinstance(people, PeopleIndex) else PeopleIndex(people, settings.honorifics)
     out = PeopleResolution()
     for role, raw in (("assignee", assignees_raw), ("cc", cc_raw)):
