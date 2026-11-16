@@ -45,7 +45,7 @@ FINDING_ORDER = [
     "duplicate_key",
 ]
 
-# The only findings Priya has to act on herself (verification ticket).
+# The only findings the standing cc has to act on (verification ticket).
 TAGS_standing_cc = frozenset(
     {
         "multiple_jo",

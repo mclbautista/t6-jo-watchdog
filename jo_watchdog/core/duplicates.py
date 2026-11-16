@@ -16,20 +16,10 @@ from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
+from t6.domain.job_order_rules import jo_key as jo_key  # the rule is t6's; kept importable here
 
 from jo_watchdog.core.job_order import JobOrderPlan, plain_text, rich_text
 from jo_watchdog.core.plan import WATCHDOG_NOTES_PROPERTY
-
-
-def jo_key(project_page_id: str | None, number: int | None) -> str | None:
-    """``<Project page id>|<jo_number_int>``, only when both resolve.
-
-    JO Numbers are one counter per project, shared by every department (#93),
-    so the Department stays on the JO but is not part of the key.
-    """
-    if not project_page_id or number is None:
-        return None
-    return f"{project_page_id}|{number}"
 
 
 def normalize_whitespace(text: str) -> str:
