@@ -176,6 +176,11 @@ class ExampleFilesTests(unittest.TestCase):
             path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
             require_live_keys(load_config(path))
 
+    def test_config_example_topics_are_not_the_general_topic(self):
+        data = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
+        self.assertNotEqual(data["intake_topic_id"], 1)
+        self.assertNotEqual(data["ops_topic_id"], 1)
+
     def test_env_example_lists_every_secret(self):
         text = (ROOT / ".env.example").read_text(encoding="utf-8")
         names = set(re.findall(r"^([A-Z_]+)=", text, re.MULTILINE))
