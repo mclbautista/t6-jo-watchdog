@@ -16,6 +16,7 @@ from tests.fakes import (
     FakeNotion,
     FakeTelegram,
     RecordedDirectory,
+    project,
     resolved,
     update,
 )
@@ -119,7 +120,8 @@ class RefreshTests(CacheTestCase):
         people = await caches.resolve_people("Ramon / @user_two", None)
         self.assertEqual(len(people.assigned), 2)
         self.assertEqual(people.cc, [PRIYA])
-        self.assertEqual(caches.resolve_project("MFG - TOC").code, "MFG")
+        self.matcher.projects = {"mfg - toc": project("proj-mfg", "MFG")}
+        self.assertEqual((await caches.resolve_project("MFG - TOC")).code, "MFG")
         self.assertEqual(caches.resolve_department("TO").department, "TOC")
         self.assertEqual(caches.resolve_department("XX").findings[0].code, "unknown_department")
 

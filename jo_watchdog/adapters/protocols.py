@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from jo_watchdog.core.extraction import Extraction
 from jo_watchdog.core.matching import Candidate, MatchResult
-from jo_watchdog.core.resolve import ContactMatch
+from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
 
 
 class IncomingUpdate(BaseModel):
@@ -147,6 +147,23 @@ class ContactMatcher(Protocol):
         Raises ``T6ApiError`` when the API cannot answer; the caller holds the message.
         """
         ...
+
+
+@runtime_checkable
+class ProjectMatcher(Protocol):
+    """Project Code lookup by the t6 API (``project resolve`` in text)."""
+
+    async def find_project(self, text: str) -> ProjectMatch:
+        """The Project in rotation that the code in ``text`` names, or an empty match.
+
+        Raises ``T6ApiError`` when the API cannot answer; the caller holds the message.
+        """
+        ...
+
+
+@runtime_checkable
+class Matcher(ContactMatcher, ProjectMatcher, Protocol):
+    """Both lookups; the t6 API seam provides them."""
 
 
 @runtime_checkable

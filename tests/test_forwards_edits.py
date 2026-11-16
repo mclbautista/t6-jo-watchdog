@@ -26,6 +26,7 @@ from tests.fakes import (
     FakeNotion,
     FakeTelegram,
     ok_result,
+    project,
 )
 
 CHAT, TOPIC = -100123, 5
@@ -115,7 +116,9 @@ class Harness:
         self.notion = FakeNotion()
         self.config = make_config()
         self.caches = None
-        self.matcher = FakeMatcher()
+        self.matcher = FakeMatcher(
+            projects={"MFG": project("proj-mfg", "MFG"), "SOMSOM": project("proj-som", "SOMSOM")}
+        )
         if caches:
             self.caches = CacheManager(
                 ledger=self.ledger, directory=None, matcher=self.matcher, config=self.config
@@ -128,8 +131,8 @@ class Harness:
             self.caches._apply(
                 "projects",
                 [
-                    {"page_id": "proj-mfg", "name": "Manufacturing", "code": "MFG"},
-                    {"page_id": "proj-som", "name": "Somsom", "code": "SOMSOM"},
+                    {"page_id": "proj-mfg", "name": "Manufacturing"},
+                    {"page_id": "proj-som", "name": "Somsom"},
                 ],
                 "2026-09-28T00:00:00Z",
             )

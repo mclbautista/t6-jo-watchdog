@@ -21,6 +21,7 @@ from tests.fakes import (
     FakeTelegram,
     live_date,
     ok_result,
+    project,
     resolved,
     update,
 )
@@ -38,7 +39,7 @@ PEOPLE = [
     {"page_id": "c-ana", "name": "Anabelle Reyes", "aliases": ["Ana"]},
     {"page_id": PRIYA, "name": "Priya"},
 ]
-PROJECTS = [{"page_id": "proj-mfg", "name": "Manufacturing", "code": "MFG"}]
+PROJECTS = [{"page_id": "proj-mfg", "name": "Manufacturing"}]
 # What the t6 API answers for the mentions these tests post (invented names).
 ANSWERS = {
     "222": resolved("c-ben", "Benjamin Cruz", "exact_id"),
@@ -82,7 +83,7 @@ class Harness:
         self.telegram = FakeTelegram(
             [update(7, message_id=42, text=text, extra=fields.pop("extra", None))]
         )
-        self.matcher = FakeMatcher(ANSWERS)
+        self.matcher = FakeMatcher(ANSWERS, {"MFG": project("proj-mfg", "MFG")})
         self.caches = make_caches(
             self.ledger, self.config, self.matcher, departments=departments
         )
@@ -217,6 +218,37 @@ class PlannerWiringTests(unittest.IsolatedAsyncioTestCase):
         await h.run()
         assigned = h.notion.created[0]["properties"]["Assigned"]
         self.assertEqual(assigned, {"relation": [{"id": "c-ben"}]})
+
+    async def test_a_message_waits_while_the_api_cannot_resolve_its_project(self):
+        h = Harness(self, task="Cut")  # no mentions: only the Project is asked
+        h.matcher.down = True
+        await h.run()
+
+        row = h.ledger.get_message(KEY)
+        self.assertEqual((row["state"], row["attempts"], row["plan_json"]), ("extracted", 0, None))
+        self.assertEqual((h.matcher.calls, h.matcher.project_calls), ([], ["MFG"]))
+        self.assertEqual(h.notion.created, [])
+
+        h.matcher.down = False
+        await h.run()
+        projects = h.notion.created[0]["properties"]["Projects"]
+        self.assertEqual(projects, {"relation": [{"id": "proj-mfg"}]})
+
+    async def test_a_reused_code_with_no_project_in_rotation_is_raised_with_no_project(self):
+        h = Harness(self, text="TWIN - TOC - JO #74\nTask: cut", task="Cut")
+        await h.run()
+
+        props = h.notion.created[0]["properties"]
+        self.assertEqual(props["Projects"], {"relation": []})
+        self.assertIn("unresolved_project", h.codes())
+        self.assertEqual(h.matcher.project_calls, ["TWIN"])
+
+    async def test_the_project_text_is_not_asked_again_after_the_plan_is_stored(self):
+        h = Harness(self, task="Cut")
+        await h.run()
+        await h.worker.drain_once()
+
+        self.assertEqual(h.matcher.project_calls, ["MFG"])
 
     async def test_unresolved_person_is_left_out_and_recorded(self):
         h = Harness(self, task="Cut", assignees_raw="Nobody Here")

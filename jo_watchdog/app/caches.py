@@ -21,7 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from jo_watchdog.adapters.protocols import ContactMatcher, DirectoryReader
+from jo_watchdog.adapters.protocols import DirectoryReader, Matcher
 from jo_watchdog.app.config import Config, resolve_settings
 from jo_watchdog.core.resolve import (
     DepartmentResolution,
@@ -54,7 +54,6 @@ CONTACT_HANDLE = "TelegramHandle"
 CONTACT_ALIASES = "Aliases"
 CONTACT_END_OF_SHIFT = "End of Shift"
 PROJECT_NAME = "Name"
-PROJECT_CODE = "Project Code"
 JO_DEPARTMENT = "Department"
 
 
@@ -98,7 +97,6 @@ def project_from_page(page: dict[str, Any]) -> ProjectEntry:
     return ProjectEntry(
         page_id=page["id"],
         name=_plain(props.get(PROJECT_NAME)),
-        code=_plain(props.get(PROJECT_CODE)),
     )
 
 
@@ -117,9 +115,7 @@ def person_from_api(item: dict[str, Any]) -> Person:
 
 def project_from_api(item: dict[str, Any]) -> ProjectEntry:
     """A ``project list`` item."""
-    return ProjectEntry(
-        page_id=item["page_id"], name=item.get("name") or "", code=item.get("project_code") or ""
-    )
+    return ProjectEntry(page_id=item["page_id"], name=item.get("name") or "")
 
 
 def department_options(data_source: dict[str, Any]) -> list[str]:
@@ -151,7 +147,7 @@ class CacheManager:
         *,
         ledger: Ledger,
         directory: DirectoryReader,
-        matcher: ContactMatcher,
+        matcher: Matcher,
         config: Config,
         clock: Callable[[], datetime] = _utcnow,
     ):
@@ -298,10 +294,16 @@ class CacheManager:
             found = [p for p in people if normalize_handle(p.telegram_handle) == handle]
         return found[0].name if len(found) == 1 else None
 
-    def resolve_project(self, project_raw: str | None) -> ProjectResolution:
+    async def resolve_project(self, project_raw: str | None) -> ProjectResolution:
+        """The Project the API finds in the header's project text (``project resolve``).
+
+        Raises ``T6ApiError`` when the API cannot answer: the worker holds the message.
+        """
         if self.projects is None:
             raise RuntimeError("Projects cache has not loaded; hold planning")
-        return resolve_project(project_raw, self.projects)
+        text = (project_raw or "").strip()
+        match = await self.matcher.find_project(text) if text else None
+        return resolve_project(project_raw, match)
 
     def project_name(self, page_id: str | None) -> str | None:
         """The cached name of a resolved Project page, for the matcher's ``state``."""

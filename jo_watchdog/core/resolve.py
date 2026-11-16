@@ -51,7 +51,6 @@ class ProjectEntry(BaseModel):
 
     page_id: str
     name: str
-    code: str = ""
 
 
 class Finding(BaseModel):
@@ -397,39 +396,25 @@ def people_resolution(
 # -- projects ------------------------------------------------------------------
 
 
-def resolve_project(project_raw: str | None, projects: Sequence[ProjectEntry]) -> ProjectResolution:
-    """Match known Project Codes as whole tokens, case-insensitively, longest first.
+class ProjectMatch(BaseModel):
+    """The API's answer for a project text: the Project in rotation, or nothing decided."""
 
-    Zero matches, more than one distinct code, or a code shared by several
-    Projects pages all leave Projects blank with an ``unresolved_project`` finding.
+    page_id: str | None = None
+    code: str | None = None
+
+
+def resolve_project(project_raw: str | None, match: ProjectMatch | None) -> ProjectResolution:
+    """The Project the API decided, or Projects blank with an ``unresolved_project`` finding.
+
+    Nothing is asked, and nothing is found, for a blank text (``match`` is None then).
     """
     if not project_raw or not project_raw.strip():
         return ProjectResolution()
-
-    by_code: dict[str, set[str]] = {}
-    spelled: dict[str, str] = {}
-    for p in projects:
-        code = p.code.strip()
-        if code:
-            by_code.setdefault(code.casefold(), set()).add(p.page_id)
-            spelled.setdefault(code.casefold(), code)
-
-    remaining = project_raw
-    matched: list[str] = []
-    for code in sorted(by_code, key=len, reverse=True):
-        pattern = re.compile(rf"(?<![\w]){re.escape(code)}(?![\w])", re.IGNORECASE)
-        if pattern.search(remaining):
-            matched.append(code)
-            # Blank the span so a shorter code inside it cannot match again.
-            remaining = pattern.sub(lambda m: " " * len(m.group(0)), remaining)
-
-    unresolved = Finding(code="unresolved_project", params={"raw": project_raw.strip()})
-    if len(matched) != 1:
-        return ProjectResolution(findings=[unresolved])
-    ids = by_code[matched[0]]
-    if len(ids) != 1:
-        return ProjectResolution(findings=[unresolved])
-    return ProjectResolution(page_id=next(iter(ids)), code=spelled[matched[0]])
+    if match is not None and match.page_id:
+        return ProjectResolution(page_id=match.page_id, code=match.code)
+    return ProjectResolution(
+        findings=[Finding(code="unresolved_project", params={"raw": project_raw.strip()})]
+    )
 
 
 # -- departments ----------------------------------------------------------------

@@ -29,7 +29,15 @@ from jo_watchdog.app.caches import FORMAT_VERSION, CacheManager
 from jo_watchdog.core.matching import Candidate, CandidateDecision, MatchResult
 from jo_watchdog.ledger.db import Ledger
 from tests.clockwork import KEY, Crash, Pipeline
-from tests.fakes import FakeClassifier, FakeMatcher, FakeNotion, FakeTelegram, ok_result, update
+from tests.fakes import (
+    FakeClassifier,
+    FakeMatcher,
+    FakeNotion,
+    FakeTelegram,
+    ok_result,
+    project,
+    update,
+)
 
 CHANNEL = {
     "type": "channel",
@@ -319,7 +327,7 @@ class CrashInjectionTests(unittest.IsolatedAsyncioTestCase):
 
 # -- Jev and reconciliation (#56) -------------------------------------------
 
-PROJECTS = [{"page_id": "proj-mg", "name": "Moonglow", "code": "MG"}]
+PROJECTS = [{"page_id": "proj-mg", "name": "Moonglow"}]
 PEOPLE = [{"page_id": "c-priya", "name": "Priya"}]
 FTR = Candidate(page_id="d-ftr", name="Moonglow FTR SCR")
 PROMO = Candidate(page_id="d-promo", name="Moonglow Promo")
@@ -399,7 +407,7 @@ class JevPipeline(Pipeline):
         caches = QuietCaches(
             ledger=ledger,
             directory=None,
-            matcher=FakeMatcher(),
+            matcher=FakeMatcher(projects={"MG": project("proj-mg", "MG")}),
             config=self.config,
             clock=self.clock,
         )
@@ -657,7 +665,7 @@ class JevCrashInjectionTests(unittest.IsolatedAsyncioTestCase):
         pipeline.deliverables.script = [[PROMO]]
         survivor = Ledger(pipeline.path)
         fetched_at = pipeline.clock().strftime("%Y-%m-%dT%H:%M:%SZ")
-        renamed = [{"page_id": "proj-mg", "name": "Renamed", "code": "MG"}]
+        renamed = [{"page_id": "proj-mg", "name": "Renamed"}]
         survivor.save_cache_snapshot("projects", FORMAT_VERSION, renamed, 1, fetched_at)
         survivor.close()
         calls = (pipeline.matcher.calls, pipeline.deliverables.calls)

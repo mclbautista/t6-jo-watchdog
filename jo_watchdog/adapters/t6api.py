@@ -29,12 +29,13 @@ from t6.verbs import (
     PersonFindInput,
     PersonListInput,
     ProjectListInput,
+    ProjectResolveInput,
     Refused,
 )
 
 from jo_watchdog.adapters.protocols import PageRef
 from jo_watchdog.core.payload import page_url_for
-from jo_watchdog.core.resolve import ContactMatch
+from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
 
 CALL_TIMEOUT_SECONDS = 30.0
 # ``person find`` takes at most this many mentions in one call.
@@ -99,6 +100,16 @@ class T6Api:
                 raise T6ApiError(f"person find answered {len(replies)} for {len(batch)} mentions")
             matches.extend(_contact_match(reply) for reply in replies)
         return matches
+
+    async def find_project(self, text: str) -> ProjectMatch:
+        """``project resolve`` with ``in_text``: the Project in rotation, rotation-aware."""
+        result = await self._call(
+            self._client.project_resolve, ProjectResolveInput(text=text, in_text=True)
+        )
+        match = result.get("match")
+        if match and not result.get("needs_review"):
+            return ProjectMatch(page_id=match["page_id"], code=match.get("project_code"))
+        return ProjectMatch()
 
     # -- Job Orders (recovery and read-back) -----------------------------------------
 

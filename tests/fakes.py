@@ -12,7 +12,7 @@ from jo_watchdog.adapters.t6api import T6ApiError
 from jo_watchdog.app.caches import department_options, person_from_page, project_from_page
 from jo_watchdog.core.deadline import parse_shift_hour
 from jo_watchdog.core.extraction import EXTRACTED_FIELDS, PROMPT_TAG, Extraction
-from jo_watchdog.core.resolve import ContactMatch
+from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
 
 # 2026-09-28 03:00:00 UTC = 11:00 in Manila.
 POSTED_AT_UNIX = 1790564400
@@ -269,8 +269,13 @@ class RecordedDirectory:
     async def projects(self) -> list[dict]:
         self._enter("projects")
         return [
-            {"page_id": p.page_id, "name": p.name, "project_code": p.code or None}
-            for p in map(project_from_page, _recorded("projects_query.json")["results"])
+            {
+                "page_id": p.page_id,
+                "name": p.name,
+                "project_code": (page["properties"]["Project Code"]["select"] or {}).get("name"),
+            }
+            for page in _recorded("projects_query.json")["results"]
+            for p in [project_from_page(page)]
         ]
 
     async def departments(self) -> list[str]:
@@ -283,16 +288,34 @@ def resolved(page_id: str, name: str, method: str = "normalized") -> ContactMatc
     return ContactMatch(status="resolved", method=method, page_id=page_id, name=name)
 
 
-class FakeMatcher:
-    """Canned ``person find`` answers: a mention (case-folded) maps to its answer, else unresolved.
+def project(page_id: str, code: str) -> ProjectMatch:
+    """A ``project resolve`` answer with the Project in rotation."""
+    return ProjectMatch(page_id=page_id, code=code)
 
-    ``down`` makes every call fail the way an unreachable API does.
+
+class FakeMatcher:
+    """Canned ``person find`` and ``project resolve`` answers, keyed by the case-folded text.
+
+    A text with no canned answer is unresolved. ``down`` makes every call fail the way an
+    unreachable API does.
     """
 
-    def __init__(self, contacts: dict[str, ContactMatch] | None = None):
+    def __init__(
+        self,
+        contacts: dict[str, ContactMatch] | None = None,
+        projects: dict[str, ProjectMatch] | None = None,
+    ):
         self.contacts = {k.casefold(): v for k, v in (contacts or {}).items()}
+        self.projects = {k.casefold(): v for k, v in (projects or {}).items()}
         self.calls: list[list[str]] = []
+        self.project_calls: list[str] = []
         self.down = False
+
+    async def find_project(self, text: str) -> ProjectMatch:
+        self.project_calls.append(text)
+        if self.down:
+            raise T6ApiError("t6 API unavailable: connection refused")
+        return self.projects.get(text.casefold(), ProjectMatch())
 
     async def find_contacts(self, mentions: list[str]) -> list[ContactMatch]:
         self.calls.append(list(mentions))

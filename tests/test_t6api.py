@@ -10,7 +10,13 @@ from pathlib import Path
 from t6.client import APIError, Unavailable
 from t6.verbs import Ambiguous, Done, Refused
 
-from jo_watchdog.adapters.protocols import ContactMatcher, DirectoryReader, JobOrderReader
+from jo_watchdog.adapters.protocols import (
+    ContactMatcher,
+    DirectoryReader,
+    JobOrderReader,
+    Matcher,
+    ProjectMatcher,
+)
 from jo_watchdog.adapters.t6api import T6Api, T6ApiError
 from jo_watchdog.app.caches import CacheManager, person_from_api
 from jo_watchdog.core.deadline import resolve_deadline
@@ -55,6 +61,9 @@ class FakeClient:
 
     def person_find(self, inputs):
         return self._answer("person_find", inputs)
+
+    def project_resolve(self, inputs):
+        return self._answer("project_resolve", inputs)
 
     def jo_find(self, inputs):
         return self._answer("jo_find", inputs)
@@ -169,6 +178,42 @@ class FindContactsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(T6Api(FakeClient()), ContactMatcher)
 
 
+def resolved_project(match, *, review=False):
+    return {
+        "match": match,
+        "method": "normalized",
+        "score": 1.0,
+        "needs_review": review,
+        "reason": None,
+        "candidates": [],
+    }
+
+
+class FindProjectTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_text_is_searched_for_a_code_and_the_match_is_the_project(self):
+        match = {"page_id": "p-mfg", "name": "Show", "project_code": "MFG"}
+        client = FakeClient(project_resolve=Done(result=resolved_project(match)))
+        found_project = await T6Api(client).find_project("MFG - TOC")
+        self.assertEqual((found_project.page_id, found_project.code), ("p-mfg", "MFG"))
+        sent = client.inputs["project_resolve"]
+        self.assertEqual((sent.text, sent.in_text), ("MFG - TOC", True))
+
+    async def test_no_match_or_a_review_leaves_the_project_unresolved(self):
+        for result in (resolved_project(None), resolved_project(None, review=True)):
+            with self.subTest(result=result):
+                client = FakeClient(project_resolve=Done(result=result))
+                self.assertIsNone((await T6Api(client).find_project("NOPE")).page_id)
+
+    async def test_a_down_api_raises(self):
+        api = T6Api(FakeClient(project_resolve=Unavailable("down")))
+        with self.assertRaises(T6ApiError):
+            await api.find_project("MFG")
+
+    async def test_the_seam_satisfies_the_matcher_protocols(self):
+        self.assertIsInstance(T6Api(FakeClient()), ProjectMatcher)
+        self.assertIsInstance(T6Api(FakeClient()), Matcher)
+
+
 class ThreadingTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_hung_call_does_not_stall_the_event_loop_and_times_out(self):
         release = threading.Event()
@@ -239,7 +284,7 @@ class CachesOverTheApiTests(unittest.IsolatedAsyncioTestCase):
         restarted.load_persisted()
         self.assertTrue(restarted.ready)
         self.assertEqual(restarted.people[0].end_of_shift, time(21))
-        self.assertEqual(restarted.projects[0].code, "SHW")
+        self.assertEqual(restarted.projects[0].name, "Show")
         self.assertEqual(restarted.departments, ["TOC"])
 
     async def test_a_parsed_shift_reaches_the_deadline_rule_unchanged(self):

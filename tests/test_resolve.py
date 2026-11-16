@@ -18,6 +18,8 @@ from jo_watchdog.core.resolve import (
     ContactMatch,
     MentionEntity,
     PeopleResolution,
+    ProjectMatch,
+    ProjectResolution,
     ResolveSettings,
     relation_properties,
     resolve_department,
@@ -25,7 +27,7 @@ from jo_watchdog.core.resolve import (
     split_mentions,
 )
 from jo_watchdog.ledger.db import Ledger
-from tests.fakes import FakeMatcher, resolved
+from tests.fakes import FakeMatcher, project, resolved
 
 FIXTURES = Path(__file__).parent / "fixtures"
 NOTION = FIXTURES / "notion"
@@ -100,6 +102,9 @@ class ResolvedBy(unittest.IsolatedAsyncioTestCase):
         self.caches._apply(
             "people", [p.model_dump(mode="json") for p in people()], "2026-10-22T00:00:00Z"
         )
+        self.caches._apply(
+            "projects", [p.model_dump(mode="json") for p in projects()], "2026-10-22T00:00:00Z"
+        )
 
     async def resolve(self, assignees, cc=None, entities=()) -> PeopleResolution:
         return await self.caches.resolve_people(assignees, cc, list(entities))
@@ -115,9 +120,8 @@ class FixtureParsingTests(unittest.TestCase):
         self.assertEqual(by_id[PRIYA].end_of_shift, "")
 
     def test_projects_and_departments(self):
-        codes = {p.code for p in projects()}
-        self.assertIn("COLD CUT", codes)
-        self.assertIn("", codes)  # a project with no code is cached but never matches
+        self.assertEqual(len(projects()), 12)
+        self.assertTrue(all(p.name for p in projects()))
         self.assertEqual(DEPARTMENTS, ["TOC", "AE", "OE", "COOR", "COLOR", "VFX", "SOUND", "ADMIN"])
 
 
@@ -297,42 +301,70 @@ class PeopleResolutionTests(ResolvedBy):
             await self.resolve("Ramon")
 
 
-class ProjectTests(unittest.TestCase):
-    def test_whole_token_case_insensitive(self):
-        out = resolve_project("mfg", projects())
-        self.assertEqual((out.code, out.findings), ("MFG", []))
-        self.assertEqual(resolve_project("SOMSOM", projects()).code, "SOMSOM")
+PROJECT_ANSWERS = {
+    # a code only one Project holds
+    "MFG": project("p-mfg", "MFG"),
+    # a code several Projects hold: one is in rotation, so the API names it
+    "TWIN": project("p-twin-in", "TWIN"),
+    # a code inside longer text
+    "MFG - TOC - Season 2": project("p-mfg", "MFG"),
+    "COLD CUT": project("p-cold-cut", "COLD CUT"),
+    # a code shared where none or several Projects are in rotation: the API names none
+    "NONE-IN": ProjectMatch(),
+    "TWO-IN": ProjectMatch(),
+}
 
-    def test_longest_code_first(self):
-        self.assertEqual(resolve_project("COLD CUT", projects()).code, "COLD CUT")
-        self.assertEqual(resolve_project("cold", projects()).code, "COLD")
-        self.assertEqual(resolve_project("LSB", projects()).code, "LSB")
 
-    def test_substring_is_not_a_token(self):
-        self.assertIsNone(resolve_project("MFGX", projects()).page_id)
-        # "58" is not the whole code "58th".
-        self.assertIsNone(resolve_project("58", projects()).page_id)
+class ProjectTests(ResolvedBy):
+    def setUp(self):
+        super().setUp()
+        self.matcher.projects = {k.casefold(): v for k, v in PROJECT_ANSWERS.items()}
 
-    def test_two_codes_in_one_mention_is_ambiguous(self):
-        out = resolve_project("PP EP 2 (APC)", projects())
-        self.assertIsNone(out.page_id)
-        self.assertEqual(out.findings[0].code, "unresolved_project")
-        self.assertEqual(out.findings[0].params["raw"], "PP EP 2 (APC)")
+    async def test_a_unique_code(self):
+        out = await self.caches.resolve_project("MFG")
+        self.assertEqual((out.page_id, out.code, out.findings), ("p-mfg", "MFG", []))
+        self.assertEqual(self.matcher.project_calls, ["MFG"])
 
-    def test_code_on_two_pages_is_ambiguous(self):
-        self.assertIsNone(resolve_project("TWIN", projects()).page_id)
+    async def test_a_code_reused_by_several_projects_with_one_in_rotation(self):
+        out = await self.caches.resolve_project("TWIN")
+        self.assertEqual((out.page_id, out.findings), ("p-twin-in", []))
 
-    def test_absent(self):
-        out = resolve_project("NOPE", projects())
+    async def test_a_reused_code_with_none_or_several_in_rotation_stays_unresolved(self):
+        for text in ("NONE-IN", "TWO-IN"):
+            with self.subTest(text=text):
+                out = await self.caches.resolve_project(text)
+                self.assertIsNone(out.page_id)
+                self.assertEqual(
+                    [(f.code, f.params) for f in out.findings],
+                    [("unresolved_project", {"raw": text})],
+                )
+
+    async def test_a_code_inside_longer_text(self):
+        out = await self.caches.resolve_project("  MFG - TOC - Season 2 ")
+        self.assertEqual(out.page_id, "p-mfg")
+        self.assertEqual(self.matcher.project_calls, ["MFG - TOC - Season 2"])
+
+    async def test_an_unknown_text_is_unresolved_with_a_finding(self):
+        out = await self.caches.resolve_project("NOPE")
         self.assertIsNone(out.page_id)
         self.assertEqual([f.code for f in out.findings], ["unresolved_project"])
-        self.assertEqual(resolve_project("", projects()).findings, [])
+
+    async def test_a_blank_text_asks_nothing_and_finds_nothing(self):
+        for text in (None, "", "  "):
+            out = await self.caches.resolve_project(text)
+            self.assertEqual((out.page_id, out.findings), (None, []))
+        self.assertEqual(self.matcher.project_calls, [])
+
+    async def test_when_the_api_cannot_answer_nothing_is_resolved(self):
+        self.matcher.down = True
+        with self.assertRaises(T6ApiError):
+            await self.caches.resolve_project("MFG")
 
 
 class RelationPropertyTests(unittest.TestCase):
     def test_only_resolved_ids_and_no_coordinator(self):
         people_out = PeopleResolution(assigned=[RAMON], cc=[PRIYA])
-        props = relation_properties(people_out, resolve_project("NOPE", projects()))
+        props = relation_properties(people_out, resolve_project("NOPE", None))
         self.assertEqual(
             props,
             {
@@ -342,8 +374,8 @@ class RelationPropertyTests(unittest.TestCase):
             },
         )
         self.assertNotIn("🗂️ Coordinator", props)
-        resolved = relation_properties(people_out, resolve_project("MFG", projects()))
-        self.assertEqual(len(resolved["Projects"]["relation"]), 1)
+        named = relation_properties(people_out, ProjectResolution(page_id="p-mfg", code="MFG"))
+        self.assertEqual(named["Projects"], {"relation": [{"id": "p-mfg"}]})
 
 
 class DepartmentTests(unittest.TestCase):

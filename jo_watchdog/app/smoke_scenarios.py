@@ -32,6 +32,7 @@ from jo_watchdog.core.extraction import EXTRACTED_FIELDS, PROMPT_TAG, Extraction
 from jo_watchdog.core.heartbeat import heartbeat_window
 from jo_watchdog.core.masker import outbound_text
 from jo_watchdog.core.matching import Candidate, CandidateDecision, MatchResult
+from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
 from jo_watchdog.ledger.db import Ledger, fmt_utc
 
 # 09:00 in Manila, two hours after that day's 07:00 boundary.
@@ -142,6 +143,14 @@ class ScriptedNotion:
     async def find_job_orders(self, telegram_key: str):
         return []
 
+    async def find_contacts(self, mentions: list[str]) -> list[ContactMatch]:
+        """The ``person find`` answer: nobody is known to the scenarios."""
+        return [ContactMatch(status="unresolved") for _ in mentions]
+
+    async def find_project(self, text: str) -> ProjectMatch:
+        """The ``project resolve`` answer: the code ``MFG`` in the text names the one Project."""
+        return ProjectMatch(page_id=PROJECT_ID, code="MFG") if "MFG" in text else ProjectMatch()
+
     async def query_project_deliverables(self, data_source_id: str, project_page_id: str):
         return [DELIVERABLE, OTHER_DELIVERABLE]
 
@@ -246,7 +255,7 @@ class Harness:
         caches: CacheManager = self.worker.caches
         caches._apply("people", [{"page_id": "c-priya", "name": "Priya"}], fetched)
         caches._apply(
-            "projects", [{"page_id": PROJECT_ID, "name": "Manufacturing", "code": "MFG"}], fetched
+            "projects", [{"page_id": PROJECT_ID, "name": "Manufacturing"}], fetched
         )
         caches._apply("departments", ["TOC", "VID"], fetched)
         caches.last_attempt = datetime.now(UTC)  # the seeded snapshots are fresh: no live refresh

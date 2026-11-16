@@ -511,10 +511,10 @@ class Worker:
                 people = await caches.resolve_people(
                     extraction.assignees_raw, extraction.cc_raw, mention_entities(message)
                 )
+                project = await caches.resolve_project(project_raw)
             except T6ApiError as exc:
                 log.warning("t6 API cannot match %s yet; holding: %s", key, exc)
                 return None
-            project = caches.resolve_project(project_raw)
             department = caches.resolve_department(department_token)
 
         plan = plan_job_order(
