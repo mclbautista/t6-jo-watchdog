@@ -18,7 +18,7 @@ planned rename to t6-sixto-watchdog and the move onto t6.
 Anyone can read this repository and its full history. Never commit:
 
 - `.env` or any real secret: the Telegram bot token, the t6 API key, gateway secrets
-- `config.yaml` (it holds the real chat, topic and Notion page ids; only
+- `config.yaml` (it holds the real chat and topic ids; only
   `config.example.yaml` is tracked)
 - `data/`, `*.db` or any SQLite file (the ledger holds raw JO text, including
   transfer passwords)
@@ -52,24 +52,46 @@ map/          design sources (mirrors of the closed design issues)
 tools/        orphan-call reconciliation rehearsal
 ```
 
+## What the API owns and what stays here (stage 2)
+
+The t6 API owns every rule and every credential for Notion and models: the Job Order
+Name, number, Department and deadline, the standing cc (`T6_STANDING_CC` on the API,
+added by `jo raise`), contact and project matching, and the withholding of credentials
+in message text (`text withhold`). The watchdog holds no Notion, OpenRouter or DeepSeek
+key and no masker or allowlist; it calls the API and imports only `t6.client` and
+`t6.verbs`. Before a capture report or a dry-run plan shows a value from the message,
+the watchdog sends it through `text withhold`, one call for each report or plan.
+
+What stays watchdog logic, and why:
+
+- **Which findings tag the standing cc** (`core/verify.py`). The findings are the
+  watchdog's own checks of a capture, so whom its report tags is report logic.
+- **Mention splitting and courtesy stripping** (`core/resolve.py`). They turn a Telegram
+  message into mentions before any rule is applied; the API matches the mentions.
+- **`parse_header_date`**. It feeds only the finding `header_date_mismatch`. The API parses
+  the header for the Name and does not return a date.
+
+An assignee whose Contact has no T6 Person ID is left out of the "end of shift" rule; the
+finding `assignee_no_person_id` is the sign. The API does not take a Contact page ID for
+that yet.
+
 ## Run locally
 
 ```sh
 cp config.example.yaml config.yaml   # fill in every FILL IN value
-cp .env.example .env                 # fill in the six values
+cp .env.example .env                 # fill in the values
 pip install -e '.[dev]'
 set -a; . ./.env; set +a
 python -m jo_watchdog.app --config config.yaml
 ```
 
 `config.yaml` is validated at startup: an unknown key, a bad value, or a
-missing chat id, page id or handle stops the boot. All three
+missing chat id or handle stops the boot. All three
 values in `.env` (`TELEGRAM_BOT_TOKEN`, `T6_API_URL`, `T6_API_SECRET`) must be set.
 `config.example.yaml` documents every key.
 
 Boot also rejects structurally invalid values before any provider call:
-a malformed Notion page id, non-positive topic ids, and an empty model alias or
-ledger path.
+non-positive topic ids, and an empty model alias or ledger path.
 The error names each bad key, never its value. Negative Telegram chat ids are
 valid. The example file passes this check but still holds `FILL IN`
 placeholders; `smoke.py`'s config step flags those separately.
@@ -241,7 +263,7 @@ and core are unchanged, and the deadman, heartbeat and ops outbox stay here.
 
 ```yaml
 telegram_mode: gateway
-gateway_url: "http://192.168.88.151:8780"
+gateway_url: "http://gateway.example:8780"
 ```
 
 In `.env`, set `WATCHDOG_SECRET` (the same value as the gateway's
@@ -312,7 +334,8 @@ read the gateway's `poll_state` as `T`, stop the watchdog and run
 ### Dry-run (rollback control)
 
 `dry_run: false` is the default. Setting `dry_run: true` and restarting stops
-each new message at `planned`: the plan goes to the ops topic (its free text as a character count), and
+each new message at `planned`: the plan goes to the ops topic (its free text as a character count, every other
+value sent through `text withhold` first), and
 no Job Order is raised and no reaction is set. Setting it back to `false`
 resumes the held plans exactly as stored.
 

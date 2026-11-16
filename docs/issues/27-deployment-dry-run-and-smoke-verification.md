@@ -14,7 +14,7 @@ Package the complete watchdog for its always-on host, retain an off-by-default d
 
 - [ ] The production image uses Python 3.12 slim and runs as a non-root user.
 - [ ] Compose injects secrets through the deployment environment, bind-mounts owner-only persistent data, uses `restart: unless-stopped`, and exposes a meaningful health check.
-- [ ] Configuration validates at startup and includes intake/ops chat and topic IDs, Priya’s page ID, owner handle, timezone, cache/retry/heartbeat values, fuzzy and Deliverable thresholds, `dry_run`, and `deliverable_link_enabled`.
+- [ ] Configuration validates at startup and includes intake/ops chat and topic IDs, the standing cc's page ID, owner handle, timezone, cache/retry/heartbeat values, fuzzy and Deliverable thresholds, `dry_run`, and `deliverable_link_enabled`.
 - [ ] Migrations are forward-only and remain backward-compatible for one release so the prior image can read the current ledger during rollback.
 - [ ] Dry-run defaults off; when enabled it stops at the exact stored `planned` payload, posts that plan to ops through the masker, and performs no Notion create or captured reaction.
 - [ ] Straight-to-live deployment is documented and does not introduce a mandatory dry-run day.
@@ -68,7 +68,7 @@ With `dry_run: true`, messages stop at `planned`; one `dry_run_plan` outbox mess
 2. Make the bot an admin of the intake group only; add it as a member with posting rights to the ops group.
 3. Read the intake and ops chat and topic ids and fill them into `config.yaml`.
 4. Create the Notion internal integration with Read content and Insert content; share Job Orders, Contacts, Projects and Deliverables with it.
-5. Fill Priya's Contacts page id and both Telegram handles.
+5. Fill the standing cc's Contacts page id and both Telegram handles.
 6. Run `smoke.py`, pick `captured_reaction` from the printed list, re-run until it passes.
 7. Start the container and watch for the first capture and the next 07:00 heartbeat.
 
