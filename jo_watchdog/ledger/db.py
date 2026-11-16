@@ -466,6 +466,14 @@ class Ledger:
         ).fetchone()
         return row["last"]
 
+    def written_messages(self, limit: int) -> list[dict]:
+        """The last ``limit`` messages for which a Job Order was written, oldest first."""
+        rows = self._conn.execute(
+            "SELECT * FROM messages WHERE notion_page_id IS NOT NULL ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
     def has_message(self, key: str) -> bool:
         return self.get_message(key) is not None
 

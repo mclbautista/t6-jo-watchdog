@@ -25,6 +25,10 @@ nothing, ``--apply`` stores real IDs and clears the ones the gateway failed or f
 backup API (#131). It is safe while the watchdog runs, as long as it runs in the watchdog's
 container: ``docker compose exec watchdog python -m jo_watchdog.app backup /tmp/ledger.db``.
 
+``compare-raise [--last N] [--must-match a,b]`` replays the last N written messages through the
+``jo raise`` preview (never the confirm) and counts, per field, how the built value compares
+with what was written; it exits 1 when a ``--must-match`` field differs.
+
 ``healthcheck`` exits 0 when the poller's liveness stamp is fresh and 1
 otherwise; the container's ``HEALTHCHECK`` runs it.
 """
@@ -47,6 +51,13 @@ from zoneinfo import ZoneInfo
 
 from jo_watchdog.adapters.gateway import GatewayTelegramClient
 from jo_watchdog.app import healthcheck
+from jo_watchdog.app.compare_raise import (
+    DEFAULT_MUST_MATCH,
+    FIELDS,
+    exit_code,
+    render,
+    run_comparison,
+)
 from jo_watchdog.app.config import (
     gateway_secret,
     load_config,
@@ -224,6 +235,61 @@ def run_backup(config_path: str, dest: str) -> int:
     return 0
 
 
+def build_compare_worker(config, ledger):
+    """A worker that can only plan: caches from the API, no Telegram, no extraction."""
+    import tempfile
+
+    from t6.client import Client
+
+    from jo_watchdog.adapters.t6api import T6Api
+    from jo_watchdog.app.caches import CacheManager
+    from jo_watchdog.app.config import t6_api_secret, t6_api_url
+    from jo_watchdog.app.worker import Worker
+
+    t6api = T6Api(Client(t6_api_url(), t6_api_secret()))
+    scratch = Ledger(str(Path(tempfile.mkdtemp(prefix="compare-raise-")) / "scratch.db"))
+    caches = CacheManager(ledger=scratch, directory=t6api, matcher=t6api, config=config)
+    worker = Worker(
+        ledger=ledger,
+        telegram=None,
+        job_orders=t6api,
+        classifier=None,
+        config=config,
+        caches=caches,
+        deliverables=t6api,
+    )
+    worker.compare_scratch = scratch
+    return worker
+
+
+async def compare_raise(config_path: str, last: int, must_match: tuple[str, ...]) -> int:
+    config = load_config(config_path)
+    try:
+        ledger = Ledger.open_read_only(config.ledger_path)
+    except LedgerNotReady as exc:
+        print(f"compare-raise: {exc}", file=sys.stderr)
+        return 2
+    worker = None
+    try:
+        worker = build_compare_worker(config, ledger)
+        await worker.caches.refresh()
+        if not worker.caches.ready:
+            print("compare-raise: the t6 API gave no people or projects", file=sys.stderr)
+            return 2
+        report = await run_comparison(ledger, worker, last=last, must_match=must_match)
+        print(render(report))
+        return exit_code(report, must_match)
+    finally:
+        scratch = getattr(worker, "compare_scratch", None)
+        if scratch is not None:
+            scratch.close()
+        ledger.close()
+
+
+def run_compare_raise(config_path: str, last: int, must_match: tuple[str, ...]) -> int:
+    return asyncio.run(compare_raise(config_path, last, must_match))
+
+
 def run_healthcheck(config_path: str) -> int:
     try:
         config = load_config(config_path)
@@ -372,6 +438,7 @@ def main(argv: list[str] | None = None) -> int:
             "ingest",
             "backfill-gateway-refs",
             "backup",
+            "compare-raise",
         ],
         help="run the watchdog (default), check the poller's liveness, retry exhausted "
         "messages, reset the polling offset, backfill a missed intake message, "
@@ -411,6 +478,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="for backfill-gateway-refs: write the changes (the default is a dry run)",
     )
+    parser.add_argument(
+        "--last", type=int, default=50, help="for compare-raise: how many written messages"
+    )
+    parser.add_argument(
+        "--must-match",
+        default=",".join(DEFAULT_MUST_MATCH),
+        help="for compare-raise: comma list of fields whose difference gives exit 1",
+    )
     parser.add_argument("--config", default="config.yaml", help="path to config.yaml")
     args, extra = parser.parse_known_args(argv)
     # Group chat ids are negative, so a Telegram Key like ``-100123:42`` looks like
@@ -432,6 +507,12 @@ def main(argv: list[str] | None = None) -> int:
         if not args.telegram_key:
             parser.error("backup needs a destination file")
         return run_backup(args.config, args.telegram_key)
+    if args.command == "compare-raise":
+        must = tuple(f.strip() for f in args.must_match.split(",") if f.strip())
+        unknown = [f for f in must if f not in FIELDS]
+        if unknown or args.last < 1:
+            parser.error(f"compare-raise: --last >= 1; --must-match from {', '.join(FIELDS)}")
+        return run_compare_raise(args.config, args.last, must)
     if args.command == "retry":
         return run_retry(args.config, args.telegram_key, args.all_exhausted)
     if args.command == "ingest":

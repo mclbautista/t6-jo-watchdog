@@ -473,7 +473,7 @@ class Worker:
                 return
 
             # Plan and resolution are decided here, once, before any external call.
-            plan = await self._build_plan(msg)
+            plan = await self.build_plan(msg)
             if plan is None:
                 return
             dup_key = self._annotate_duplicate(msg, plan)
@@ -497,7 +497,7 @@ class Worker:
             return
         await self._create(msg, plan)
 
-    async def _build_plan(self, msg: dict) -> JobOrderPlan | None:
+    async def build_plan(self, msg: dict) -> JobOrderPlan | None:
         """Plan one extracted message: the #21 planner fed by the #22 resolvers.
 
         Without caches nothing is resolved: no relations and no shift deadlines. Contacts and
