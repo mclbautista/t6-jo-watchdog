@@ -236,7 +236,7 @@ class Worker:
                 )
                 continue
             if u.edited:
-                self.handle_edit(u)
+                await self.handle_edit(u)
                 continue
             key = telegram_key(u.chat_id, u.message_id)
             if self.ledger.has_message(key):
@@ -289,11 +289,13 @@ class Worker:
 
     # -- edits (#24) -------------------------------------------------------
 
-    def handle_edit(self, u) -> None:
+    async def handle_edit(self, u) -> None:
         """Record an in-scope edit per the #24 edit table; never touch the row.
 
         A correction needs a fresh Telegram message, which gets its own
-        ``Telegram Key`` and row.
+        ``Telegram Key`` and row. The report shows the Name withheld; if the API cannot
+        withhold it the error propagates, nothing is recorded and the update is not
+        acknowledged, so it comes again.
         """
         if self.ledger.edit_seen(u.update_id):
             self.ledger.advance_offset(u.update_id)
@@ -308,7 +310,7 @@ class Worker:
             return
         report = None
         if action is EditAction.REPORT:
-            report = self._edit_report(msg, page_url_for(msg["notion_page_id"]))
+            report = await self._edit_report(msg, page_url_for(msg["notion_page_id"]))
         self.ledger.record_edit(
             key,
             u.update_id,
@@ -317,10 +319,13 @@ class Worker:
             report=report,
         )
 
-    def _edit_report(self, msg: dict, page_url: str, *, name: str | None = None) -> OutboxMessage:
+    async def _edit_report(
+        self, msg: dict, page_url: str, *, name: str | None = None
+    ) -> OutboxMessage:
         if name is None:
             plan = json.loads(msg["plan_json"]) if msg.get("plan_json") else {}
             name = plan.get("name") or msg["first_line"]
+        name = await self._withheld(name)
         return OutboxMessage(
             kind="edit_after_capture",
             chat_id=self.config.ops_chat_id,
@@ -827,7 +832,10 @@ class Worker:
         if self.ledger.has_pending_edits(key):
             # Edited while still in the pipeline: the row holds the original
             # text, and the edit is reported once, now that it is captured.
-            reports.append(self._edit_report(msg, page_ref.url, name=plan.name))
+            try:
+                reports.append(await self._edit_report(msg, page_ref.url, name=plan.name))
+            except Exception as exc:  # as the capture report: retry the step
+                raise StepFailure(NOTION_READ_BACK, exc) from exc
         self.ledger.mark_written(
             key,
             page_ref.id,

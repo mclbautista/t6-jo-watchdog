@@ -5,6 +5,8 @@ import unittest
 from jo_watchdog.adapters.t6api import ApiUnreachable, T6ApiError
 from jo_watchdog.core.report import DRY_RUN_HEADER, FLAGGED_HEADER
 from tests.fakes import FakeClassifier, FakeJobOrders, ok_result, update
+from tests.test_forwards_edits import Harness as EditHarness
+from tests.test_forwards_edits import edit_update, message_update
 from tests.test_outbox import Harness
 from tests.test_worker import make_worker
 
@@ -84,6 +86,48 @@ class DryRunPlanTests(unittest.IsolatedAsyncioTestCase):
                 await worker.run_once()
                 self.assertEqual([s for s in telegram.sent if DRY_RUN_HEADER in s[2]], [])
                 self.assertEqual(ledger.get_message(KEY)["state"], "extracted")
+
+
+class EditReportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_edit_report_shows_no_credential_from_the_name(self):
+        h = EditHarness(self)
+        await h.feed(message_update(1, 10, f"{HEADER}\nTask: original"))
+        await h.feed(edit_update(2, 10, f"{HEADER}\nTask: changed"))
+        edit_posts = [p for p in h.posts() if p.startswith("✏️")]
+        self.assertEqual(len(edit_posts), 1)
+        self.assertNotIn("something", edit_posts[0])
+        self.assertIn("MG - TOC - JO #41", edit_posts[0])
+        self.assertNotIn("something", "\n".join(h.posts()))
+
+    async def test_an_edit_made_in_the_pipeline_is_reported_withheld(self):
+        h = EditHarness(self)
+        h.telegram.updates = [
+            message_update(1, 10, f"{HEADER}\nTask: original"),
+            edit_update(2, 10, f"{HEADER}\nTask: changed"),
+        ]
+        await h.worker.poll_once()
+        await h.worker.drain_once()
+        await h.worker.deliver_outbox()
+        self.assertNotIn("something", "\n".join(h.posts()))
+        self.assertEqual(len([p for p in h.posts() if p.startswith("✏️")]), 1)
+
+    async def test_the_fallback_first_line_is_withheld_too(self):
+        h = EditHarness(self)
+        await h.feed(message_update(1, 10, f"{HEADER}\nTask: original"))
+        h.ledger._conn.execute("UPDATE messages SET plan_json = NULL")
+        await h.feed(edit_update(2, 10, "changed"))
+        self.assertNotIn("something", "\n".join(h.posts()))
+
+    async def test_when_the_api_fails_the_edit_is_not_recorded_or_posted(self):
+        for error in (ApiUnreachable("down"), T6ApiError("refused")):
+            with self.subTest(error=type(error).__name__):
+                h = EditHarness(self)
+                await h.feed(message_update(1, 10, f"{HEADER}\nTask: original"))
+                h.notion.withhold_down = error
+                with self.assertRaises(type(error)):
+                    await h.feed(edit_update(2, 10, f"{HEADER}\nTask: changed"))
+                self.assertEqual(h.edits(10), [])
+                self.assertEqual([p for p in h.posts() if p.startswith("✏️")], [])
 
 
 if __name__ == "__main__":
