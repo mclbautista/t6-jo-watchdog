@@ -9,7 +9,7 @@ dependencies = [
     "pydantic>=2.7",
     "PyYAML>=6.0",
     "tzdata>=2024.1",
-    "t6[client] @ git+https://github.com/mclbautista/t6-core.git@v0.6.7",
+    "t6[client] @ git+https://github.com/mclbautista/t6-core.git@f66afa98f5db57a1a85aa4e3197d01d01d065d4b",
 ]
 
 [project.optional-dependencies]
