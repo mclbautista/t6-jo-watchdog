@@ -1,8 +1,9 @@
 """Pure core: resolve raw People, Project and Department mentions to Notion values.
 
-The extractor only proposes text; this module decides identity against the
-cached Contacts, Projects and Department lists (resolve, don't generate). It has
-no I/O: callers pass the loaded snapshots in, so every rule is testable offline.
+The extractor only proposes text; identity is decided elsewhere (resolve, don't
+generate): Contacts and Projects by the t6 API, Departments against the cached
+list. This module splits the posted text into mentions, turns the API's answers
+into results and findings, and has no I/O.
 
 Precision beats recall. Anything ambiguous stays blank and is reported as a
 finding (code plus parameters, rendered later by the ops reporter); nothing is
@@ -12,13 +13,11 @@ backfilled later.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from datetime import time
+from typing import Literal
 
 from pydantic import BaseModel, Field
-from rapidfuzz import fuzz
-
-DEFAULT_HONORIFICS = ("ate", "kuya", "sir")
 
 # Mention separators: commas, slashes, ampersands, " and ", and line breaks.
 _SPLIT_RE = re.compile(r"\s*(?:,|/|&|\n|\band\b)\s*", re.IGNORECASE)
@@ -65,9 +64,6 @@ class Finding(BaseModel):
 class ResolveSettings(BaseModel):
     """The resolution knobs from config."""
 
-    fuzzy_min_score: float = 90
-    fuzzy_min_lead: float = 8
-    honorifics: tuple[str, ...] = DEFAULT_HONORIFICS
     department_aliases: dict[str, str] = Field(default_factory=dict)
     standing_cc_contact_page_id: str | None = None
 
@@ -90,7 +86,7 @@ class MentionResult(BaseModel):
     raw: str
     role: str  # "assignee" | "cc"
     status: str  # "resolved" | "unresolved" | "ambiguous"
-    method: str | None = None  # "user_id" | "handle" | "alias" | "fuzzy"
+    method: str | None = None  # the API's method: "exact_id" | "normalized" | "fuzzy" | "llm"
     page_id: str | None = None
     contact_name: str | None = None
 
@@ -131,30 +127,15 @@ class DepartmentResolution(BaseModel):
         return self.department is not None
 
 
-# -- normalization -------------------------------------------------------------
-
-
-def normalize_name(text: str, honorifics: Iterable[str] = DEFAULT_HONORIFICS) -> str:
-    """Casefold, trim, collapse whitespace, and drop honorific words."""
-    drop = {h.casefold() for h in honorifics}
-    words = [w for w in text.casefold().split() if w.strip(".") not in drop]
-    return " ".join(words)
+# -- mentions --------------------------------------------------------------------
 
 
 def normalize_handle(handle: str) -> str:
     return handle.strip().lstrip("@").casefold()
 
 
-def normalize_aliases(
-    aliases: Iterable[str], honorifics: Iterable[str] = DEFAULT_HONORIFICS
-) -> list[str]:
-    """Each Contact alias is normalized like a mention; blanks are dropped."""
-    out = []
-    for part in aliases:
-        norm = normalize_name(part, honorifics)
-        if norm:
-            out.append(norm)
-    return out
+def _fold(text: str) -> str:
+    return " ".join(text.casefold().split())
 
 
 def _strip_courtesy(segment: str) -> str:
@@ -167,6 +148,23 @@ def _strip_courtesy(segment: str) -> str:
         text = text[: m.start()].strip()
 
 
+def _pieces(raw: str | None) -> list[tuple[str, bool]]:
+    """Each mention of an ``assignees_raw``/``cc_raw`` value, with its lead flag.
+
+    ``lead`` marks a single word written right before an ``@handle`` (``ate @user_four``):
+    it may be a title for the handle or a person of its own, which the answers decide.
+    """
+    if not raw or not raw.strip():
+        return []
+    condition = _CONDITION_RE.search(raw)
+    head = raw[: condition.start()] if condition else raw
+    out = _split_head(head)
+    if condition:
+        tail = condition.group(0).strip()
+        out = [*out[:-1], (f"{out[-1][0]} {tail}", False)] if out else [(tail, False)]
+    return out
+
+
 def split_mentions(raw: str | None) -> list[str]:
     """Split an ``assignees_raw``/``cc_raw`` value into individual mentions.
 
@@ -176,187 +174,176 @@ def split_mentions(raw: str | None) -> list[str]:
     ``kung sakaling ...``) is joined, complete, to the mention before it, so
     that mention is ambiguous and nothing is assigned on a condition.
     """
-    if not raw or not raw.strip():
-        return []
-    condition = _CONDITION_RE.search(raw)
-    head = raw[: condition.start()] if condition else raw
-    out = _split_head(head)
-    if condition:
-        tail = condition.group(0).strip()
-        out = [*out[:-1], f"{out[-1]} {tail}"] if out else [tail]
-    return out
+    return [text for text, _ in _pieces(raw)]
 
 
-def _split_head(text: str) -> list[str]:
-    out = []
+def _split_head(text: str) -> list[tuple[str, bool]]:
+    out: list[tuple[str, bool]] = []
     for part in _SPLIT_RE.split(text):
         part = _strip_courtesy(part)
         if not part:
             continue
         if _HEDGE_RE.search(part):
-            out.append(part)
+            out.append((part, False))
             continue
         out.extend(_split_handles(part))
     return out
 
 
-def _split_handles(part: str) -> list[str]:
-    """``Ramon @user_two`` -> ``Ramon``, ``@user_two``; ``ate @user_four`` stays whole."""
-    pieces: list[str] = []
+def _split_handles(part: str) -> list[tuple[str, bool]]:
+    """``Ramon @user_two`` -> ``Ramon`` (lead), ``@user_two``."""
+    pieces: list[tuple[str, bool]] = []
     last = 0
     for m in _HANDLE_RE.finditer(part):
         before = part[last : m.start()].strip()
-        if before and normalize_name(before):
-            pieces.append(before)
-        elif before:
-            # Only an honorific before the handle: keep it attached (``ate @user_four``).
-            pieces.append(f"{before} {m.group(0)}")
-            last = m.end()
-            continue
-        pieces.append(m.group(0))
+        if before:
+            pieces.append((before, len(before.split()) == 1))
+        pieces.append((m.group(0), False))
         last = m.end()
     tail = part[last:].strip()
     if tail:
-        pieces.append(tail)
-    return [p for p in (_strip_courtesy(p) for p in pieces) if p]
+        pieces.append((tail, False))
+    return [(t, lead) for t, lead in ((_strip_courtesy(t), lead) for t, lead in pieces) if t]
 
 
-# -- people --------------------------------------------------------------------
+class Mention(BaseModel):
+    """One mention after splitting: what was written, and what is asked of the API for it."""
+
+    raw: str
+    role: str  # "assignee" | "cc"
+    query: str
+    hedged: bool = False  # never sent: it ends ambiguous as written
+    lead: bool = False  # a lone word right before an @handle
+    words: list[str] = Field(default_factory=list)  # the words of a name with no separator
 
 
-class PeopleIndex:
-    """Lookup tables over a People snapshot. Collisions map to several page ids."""
+class ContactMatch(BaseModel):
+    """The API's answer for one mention: ``person find`` boiled down to one status."""
 
-    def __init__(self, people: Sequence[Person], honorifics: Iterable[str] = DEFAULT_HONORIFICS):
-        self.honorifics = tuple(honorifics)
-        self.people = {p.page_id: p for p in people}
-        self.by_user_id: dict[str, set[str]] = {}
-        self.by_handle: dict[str, set[str]] = {}
-        self.by_alias: dict[str, set[str]] = {}
-        self.titles: list[tuple[str, str]] = []  # (normalized title, page id)
-        for p in people:
-            if p.telegram_user_id.strip():
-                self.by_user_id.setdefault(p.telegram_user_id.strip(), set()).add(p.page_id)
-            if normalize_handle(p.telegram_handle):
-                self.by_handle.setdefault(normalize_handle(p.telegram_handle), set()).add(p.page_id)
-            for alias in normalize_aliases(p.aliases, self.honorifics):
-                self.by_alias.setdefault(alias, set()).add(p.page_id)
-            title = normalize_name(p.name, self.honorifics)
-            if title:
-                self.titles.append((title, p.page_id))
+    status: Literal["resolved", "ambiguous", "unresolved"]
+    method: str | None = None  # the API's: exact_id, normalized, fuzzy, llm
+    page_id: str | None = None
+    name: str | None = None
 
 
-def _entity_for(
-    segment: str, entities: Sequence[MentionEntity], honorifics: Iterable[str] = DEFAULT_HONORIFICS
-) -> MentionEntity | None:
+def _entity_for(segment: str, entities: Sequence[MentionEntity]) -> MentionEntity | None:
     """The entity that is this mention itself, never one that merely overlaps it.
 
     A ``mention`` entity binds when its ``@handle`` is a whole token of the
-    segment; a ``text_mention`` binds when its display text equals the segment
-    after normalization. ``Jo`` therefore never supplies identity for ``Lena``.
+    segment; a ``text_mention`` binds when its display text is the segment.
+    ``Jo`` therefore never supplies identity for ``Lena``.
     """
     handles = {normalize_handle(m.group(1)) for m in _HANDLE_RE.finditer(segment)}
-    norm = normalize_name(segment, honorifics)
     for entity in entities:
         if not entity.text:
             continue
         if entity.text.startswith("@"):
             if normalize_handle(entity.text) in handles:
                 return entity
-        elif normalize_name(entity.text, honorifics) == norm:
+        elif _fold(entity.text) == _fold(segment):
             return entity
     return None
 
 
-def _from_ids(raw: str, role: str, ids: set[str], method: str, index: PeopleIndex):
-    if len(ids) == 1:
-        page_id = next(iter(ids))
-        return MentionResult(
-            raw=raw,
-            role=role,
-            status="resolved",
-            method=method,
-            page_id=page_id,
-            contact_name=index.people[page_id].name,
-        )
-    return MentionResult(raw=raw, role=role, status="ambiguous", method=method)
-
-
-def resolve_mention(
-    raw: str,
-    role: str,
-    index: PeopleIndex,
-    settings: ResolveSettings,
-    entities: Sequence[MentionEntity] = (),
-) -> MentionResult:
-    """Resolve one mention: TelegramUserID, TelegramHandle, Aliases, then guarded fuzzy."""
-    if _HEDGE_RE.search(raw):
-        return MentionResult(raw=raw, role=role, status="ambiguous")
-
-    entity = _entity_for(raw, entities, settings.honorifics)
-
-    # 1. TelegramUserID from a mention/text_mention entity.
-    if entity and entity.user_id and entity.user_id in index.by_user_id:
-        return _from_ids(raw, role, index.by_user_id[entity.user_id], "user_id", index)
-
-    # 2. TelegramHandle, from the entity or an @handle in the text.
-    handle = None
+def _query_for(segment: str, entities: Sequence[MentionEntity]) -> str:
+    """What the API is asked: the Telegram ID or handle of a bound entity, else the text."""
+    entity = _entity_for(segment, entities)
+    if entity and entity.user_id:
+        return entity.user_id
     if entity and entity.handle:
-        handle = normalize_handle(entity.handle)
-    else:
-        m = _HANDLE_RE.search(raw)
-        if m:
-            handle = normalize_handle(m.group(1))
-    if handle and handle in index.by_handle:
-        return _from_ids(raw, role, index.by_handle[handle], "handle", index)
-
-    # 3. Contacts Aliases (exact, after normalization; a collision is unresolved).
-    norm = normalize_name(raw, settings.honorifics)
-    if norm in index.by_alias:
-        return _from_ids(raw, role, index.by_alias[norm], "alias", index)
-
-    # An @handle mention never falls through to fuzzy matching.
-    if handle or norm.startswith("@") or (entity and entity.user_id):
-        return MentionResult(raw=raw, role=role, status="unresolved")
-
-    # 4. Guarded fuzzy match against Contacts titles.
-    return _fuzzy(raw, role, norm, index, settings)
+        return "@" + normalize_handle(entity.handle)
+    return segment
 
 
-def fuzzy_ranking(norm: str, index: PeopleIndex) -> list[tuple[str, float]]:
-    """Contacts page ids with their best title score for ``norm``, highest first."""
-    best: dict[str, float] = {}
-    for title, page_id in index.titles:
-        score = fuzz.WRatio(norm, title)
-        if score > best.get(page_id, -1):
-            best[page_id] = score
-    return sorted(best.items(), key=lambda kv: kv[1], reverse=True)
+def people_mentions(
+    assignees_raw: str | None, cc_raw: str | None, entities: Sequence[MentionEntity] = ()
+) -> list[Mention]:
+    """Assignee mentions, then cc mentions, in the order written."""
+    mentions = []
+    for role, raw in (("assignee", assignees_raw), ("cc", cc_raw)):
+        for text, lead in _pieces(raw):
+            hedged = bool(_HEDGE_RE.search(text))
+            words = text.split()
+            mentions.append(
+                Mention(
+                    raw=text,
+                    role=role,
+                    query=_query_for(text, entities),
+                    hedged=hedged,
+                    lead=lead and not hedged,
+                    words=words if not hedged and "@" not in text and len(words) >= 2 else [],
+                )
+            )
+    return mentions
 
 
-def _fuzzy(
-    raw: str, role: str, norm: str, index: PeopleIndex, settings: ResolveSettings
-) -> MentionResult:
-    if not norm:
-        return MentionResult(raw=raw, role=role, status="unresolved")
-    ranked = fuzzy_ranking(norm, index)
-    if not ranked:
-        return MentionResult(raw=raw, role=role, status="unresolved")
-    top_id, top = ranked[0]
-    runner_up = ranked[1][1] if len(ranked) > 1 else 0.0
-    if top >= settings.fuzzy_min_score and top - runner_up >= settings.fuzzy_min_lead:
-        return MentionResult(
-            raw=raw,
-            role=role,
+def mention_results(
+    mention: Mention, match: ContactMatch | None, word_matches: Sequence[ContactMatch] = ()
+) -> list[MentionResult]:
+    """How one mention resolved: usually one result, several when ``Mira Lena`` is two people.
+
+    A hedged mention has no match and ends ambiguous. A mention nobody knows splits into its
+    words only if every word is exactly one known Contact (``word_matches``, one for each word).
+    """
+    if match is None:
+        return [MentionResult(raw=mention.raw, role=mention.role, status="ambiguous")]
+    resolved = match.status == "resolved"
+    result = MentionResult(
+        raw=mention.raw,
+        role=mention.role,
+        status=match.status,
+        method=match.method if resolved else None,
+        page_id=match.page_id if resolved else None,
+        contact_name=match.name if resolved else None,
+    )
+    if match.status != "unresolved" or not word_matches:
+        return [result]
+    exact = ("exact_id", "normalized")
+    if any(m.status != "resolved" or m.method not in exact for m in word_matches):
+        return [result]
+    return [
+        MentionResult(
+            raw=word,
+            role=mention.role,
             status="resolved",
-            method="fuzzy",
-            page_id=top_id,
-            contact_name=index.people[top_id].name,
+            method=m.method,
+            page_id=m.page_id,
+            contact_name=m.name,
         )
-    return MentionResult(raw=raw, role=role, status="unresolved")
+        for word, m in zip(mention.words, word_matches, strict=True)
+    ]
+
+
+def merge_leads(
+    mentions: Sequence[Mention], groups: Sequence[list[MentionResult]]
+) -> list[MentionResult]:
+    """A lead word nobody knows belongs to the @handle after it (``ate @user_four``)."""
+    out: list[MentionResult] = []
+    skip = False
+    for i, (mention, group) in enumerate(zip(mentions, groups, strict=True)):
+        if skip:
+            skip = False
+            continue
+        following = mentions[i + 1] if i + 1 < len(mentions) else None
+        if (
+            mention.lead
+            and group[0].status == "unresolved"
+            and following is not None
+            and following.role == mention.role
+            and following.raw.startswith("@")
+        ):
+            handle_result = groups[i + 1][0]
+            out.append(
+                handle_result.model_copy(update={"raw": f"{mention.raw} {following.raw}"})
+            )
+            skip = True
+        else:
+            out.extend(group)
+    return out
 
 
 def _mention_finding(result: MentionResult) -> Finding | None:
-    if result.status == "resolved" and result.method == "fuzzy":
+    if result.status == "resolved" and result.method in ("fuzzy", "llm"):
         return Finding(
             code="fuzzy_person",
             params={"raw": result.raw, "role": result.role, "contact": result.contact_name or ""},
@@ -368,61 +355,41 @@ def _mention_finding(result: MentionResult) -> Finding | None:
     return None
 
 
-def _split_unresolved_names(
-    result: MentionResult, index: PeopleIndex, settings: ResolveSettings
-) -> list[MentionResult]:
-    """``Mira Lena`` (names with no separator) splits only if every word is an exact alias."""
-    if result.status != "unresolved" or "@" in result.raw:
-        return [result]
-    words = [w for w in result.raw.split() if normalize_name(w, settings.honorifics)]
-    if len(words) < 2:
-        return [result]
-    parts = []
-    for word in words:
-        ids = index.by_alias.get(normalize_name(word, settings.honorifics))
-        if not ids or len(ids) != 1:
-            return [result]
-        parts.append(_from_ids(word, result.role, ids, "alias", index))
-    return parts
-
-
 def _add_unique(ids: list[str], page_id: str) -> None:
     if page_id not in ids:
         ids.append(page_id)
 
 
-def resolve_people(
-    assignees_raw: str | None,
-    cc_raw: str | None,
-    people: Sequence[Person] | PeopleIndex,
-    settings: ResolveSettings,
-    entities: Sequence[MentionEntity] = (),
+def people_resolution(
+    results: Sequence[MentionResult], people: Sequence[Person], settings: ResolveSettings
 ) -> PeopleResolution:
-    """Resolve Assigned and cc. The standing cc is always in cc; Coordinator stays blank."""
-    index = people if isinstance(people, PeopleIndex) else PeopleIndex(people, settings.honorifics)
+    """Assigned and cc from the mention results.
+
+    The standing cc is always in cc; Coordinator stays blank.
+    """
     out = PeopleResolution()
-    for role, raw in (("assignee", assignees_raw), ("cc", cc_raw)):
-        for mention in split_mentions(raw):
-            result = resolve_mention(mention, role, index, settings, entities)
-            for part in _split_unresolved_names(result, index, settings):
-                out.mentions.append(part)
-                finding = _mention_finding(part)
-                if finding:
-                    out.findings.append(finding)
-                if part.status != "resolved" or part.page_id is None:
-                    continue
-                if role == "assignee":
-                    _add_unique(out.assigned, part.page_id)
-                else:
-                    _add_unique(out.cc, part.page_id)
+    for result in results:
+        out.mentions.append(result)
+        finding = _mention_finding(result)
+        if finding:
+            out.findings.append(finding)
+        if result.status != "resolved" or result.page_id is None:
+            continue
+        _add_unique(out.assigned if result.role == "assignee" else out.cc, result.page_id)
 
     if settings.standing_cc_contact_page_id:
         _add_unique(out.cc, settings.standing_cc_contact_page_id)
 
+    known = {p.page_id: p for p in people}
+    names = {r.page_id: r.contact_name for r in out.mentions if r.page_id}
     for page_id in out.assigned:
-        person = index.people[page_id]
+        person = known.get(page_id)
         out.assignee_shifts.append(
-            AssigneeShift(page_id=page_id, name=person.name, end_of_shift=person.end_of_shift)
+            AssigneeShift(
+                page_id=page_id,
+                name=person.name if person else names.get(page_id) or "",
+                end_of_shift=person.end_of_shift if person else "",
+            )
         )
     return out
 

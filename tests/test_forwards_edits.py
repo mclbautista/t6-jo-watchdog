@@ -19,7 +19,14 @@ from jo_watchdog.core.duplicates import text_sha256
 from jo_watchdog.ledger.db import Ledger
 from jo_watchdog.ledger.migrations import MIGRATIONS
 from jo_watchdog.ledger.states import State
-from tests.fakes import POSTED_AT_UNIX, FakeClassifier, FakeNotion, FakeTelegram, ok_result
+from tests.fakes import (
+    POSTED_AT_UNIX,
+    FakeClassifier,
+    FakeMatcher,
+    FakeNotion,
+    FakeTelegram,
+    ok_result,
+)
 
 CHAT, TOPIC = -100123, 5
 FIXTURES = json.loads(
@@ -108,8 +115,11 @@ class Harness:
         self.notion = FakeNotion()
         self.config = make_config()
         self.caches = None
+        self.matcher = FakeMatcher()
         if caches:
-            self.caches = CacheManager(ledger=self.ledger, directory=None, config=self.config)
+            self.caches = CacheManager(
+                ledger=self.ledger, directory=None, matcher=self.matcher, config=self.config
+            )
             self.caches._apply(
                 "people",
                 [{"page_id": "c-ben", "name": "Benjamin Cruz", "telegram_user_id": "222"}],

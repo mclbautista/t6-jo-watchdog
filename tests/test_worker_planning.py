@@ -14,7 +14,16 @@ from jo_watchdog.app.worker import Worker
 from jo_watchdog.core.deadline import MANILA
 from jo_watchdog.core.job_order import manila_iso
 from jo_watchdog.ledger.db import Ledger
-from tests.fakes import FakeClassifier, FakeNotion, FakeTelegram, live_date, ok_result, update
+from tests.fakes import (
+    FakeClassifier,
+    FakeMatcher,
+    FakeNotion,
+    FakeTelegram,
+    live_date,
+    ok_result,
+    resolved,
+    update,
+)
 
 KEY = "-100123:42"
 PRIYA = "c-priya"
@@ -30,10 +39,18 @@ PEOPLE = [
     {"page_id": PRIYA, "name": "Priya"},
 ]
 PROJECTS = [{"page_id": "proj-mfg", "name": "Manufacturing", "code": "MFG"}]
+# What the t6 API answers for the mentions these tests post (invented names).
+ANSWERS = {
+    "222": resolved("c-ben", "Benjamin Cruz", "exact_id"),
+    "Benjamin": resolved("c-ben", "Benjamin Cruz"),
+    "Benjamin Cruze": resolved("c-ben", "Benjamin Cruz", "fuzzy"),
+    "Ana": resolved("c-ana", "Anabelle Reyes"),
+    "Priya": resolved(PRIYA, "Priya"),
+}
 
 
-def make_caches(ledger, config, *, people=PEOPLE, departments=("TOC", "VID")):
-    caches = CacheManager(ledger=ledger, directory=None, config=config)
+def make_caches(ledger, config, matcher, *, people=PEOPLE, departments=("TOC", "VID")):
+    caches = CacheManager(ledger=ledger, directory=None, matcher=matcher, config=config)
     caches._apply("people", people, FETCHED)
     caches._apply("projects", PROJECTS, FETCHED)
     caches._apply("departments", list(departments), FETCHED)
@@ -65,7 +82,10 @@ class Harness:
         self.telegram = FakeTelegram(
             [update(7, message_id=42, text=text, extra=fields.pop("extra", None))]
         )
-        self.caches = make_caches(self.ledger, self.config, departments=departments)
+        self.matcher = FakeMatcher(ANSWERS)
+        self.caches = make_caches(
+            self.ledger, self.config, self.matcher, departments=departments
+        )
         self.worker = Worker(
             ledger=self.ledger,
             telegram=self.telegram,
@@ -175,6 +195,29 @@ class PlannerWiringTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("fuzzy_person", h.codes())
 
+    async def test_the_mentions_of_a_message_go_to_the_api_in_one_call(self):
+        h = Harness(self, task="Cut", assignees_raw="Benjamin / Ana", cc_raw="Nobody Here")
+        await h.run()
+
+        self.assertEqual(h.matcher.calls[0], ["Benjamin", "Ana", "Nobody Here", "Nobody", "Here"])
+        self.assertEqual(len(h.matcher.calls), 1)
+
+    async def test_a_message_waits_while_the_api_is_down_and_is_planned_when_it_answers(self):
+        h = Harness(self, task="Cut", assignees_raw="Benjamin")
+        h.matcher.down = True
+        await h.run()
+        await h.run()
+
+        row = h.ledger.get_message(KEY)
+        self.assertEqual((row["state"], row["attempts"], row["plan_json"]), ("extracted", 0, None))
+        self.assertEqual(h.notion.created, [])
+        self.assertEqual(len(h.matcher.calls), 2)  # asked again on the next drain
+
+        h.matcher.down = False
+        await h.run()
+        assigned = h.notion.created[0]["properties"]["Assigned"]
+        self.assertEqual(assigned, {"relation": [{"id": "c-ben"}]})
+
     async def test_unresolved_person_is_left_out_and_recorded(self):
         h = Harness(self, task="Cut", assignees_raw="Nobody Here")
         await h.run()
@@ -214,7 +257,8 @@ class PlannerWiringTests(unittest.IsolatedAsyncioTestCase):
                 ]
             },
         )
-        h.worker.caches = make_caches(h.ledger, h.config, people=people)
+        h.matcher.contacts["lena"] = resolved("c-lena", "Lena Cruz")
+        h.worker.caches = make_caches(h.ledger, h.config, h.matcher, people=people)
         await h.run()
 
         self.assertEqual(
@@ -281,6 +325,7 @@ class StoredPlanReplayTests(unittest.IsolatedAsyncioTestCase):
         h.worker.caches = make_caches(
             h.ledger,
             h.config,
+            h.matcher,
             people=[{"page_id": "c-other", "name": "Benjamin Cruz"}],
             departments=("VID",),
         )

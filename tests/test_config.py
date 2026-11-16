@@ -40,9 +40,6 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(config.department_aliases, {"TO": "TOC"})
         self.assertEqual(config.cache_refresh_hours, 6)
         self.assertEqual(config.cache_stale_alert_hours, 24)
-        self.assertEqual(config.fuzzy_min_score, 90)
-        self.assertEqual(config.fuzzy_min_lead, 8)
-        self.assertEqual(config.honorifics, ["ate", "kuya", "sir"])
         self.assertEqual(config.header_date_tolerance_days, 1)
         self.assertEqual(config.retry_schedule_seconds, [30, 120, 300, 600])
         self.assertEqual(config.deadman_stale_minutes, 10)
@@ -72,7 +69,9 @@ class ValidationTests(unittest.TestCase):
             {"retry_schedule_seconds": [30, 0]},
             {"t_link": 1.5},
             {"t_hint": 0.95, "t_link": 0.90},
-            {"fuzzy_min_score": 101},
+            {"fuzzy_min_score": 90},  # removed with the Contact resolver (#144)
+            {"fuzzy_min_lead": 8},
+            {"honorifics": ["ate"]},
             {"cache_refresh_hours": 0},
             {"cache_refresh_hours": 30, "cache_stale_alert_hours": 24},
             {"owner_telegram_handle": "has space"},

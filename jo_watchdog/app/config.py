@@ -117,9 +117,6 @@ class Config(BaseModel):
     standing_cc_contact_page_id: str | None = None
     cache_refresh_hours: float = Field(default=6, gt=0)
     cache_stale_alert_hours: float = Field(default=24, gt=0)
-    fuzzy_min_score: float = Field(default=90, ge=0, le=100)
-    fuzzy_min_lead: float = Field(default=8, ge=0, le=100)
-    honorifics: list[str] = Field(default_factory=lambda: ["ate", "kuya", "sir"])
 
     # Ledger
     ledger_path: str = "./data/ledger.db"
@@ -186,11 +183,6 @@ class Config(BaseModel):
             raise ValueError("retry_schedule_seconds must be a non-empty list of positive ints")
         return value
 
-    @field_validator("honorifics")
-    @classmethod
-    def _honorifics(cls, value: list[str]) -> list[str]:
-        return [h.strip().casefold() for h in value if h.strip()]
-
     @field_validator("department_aliases")
     @classmethod
     def _department_aliases(cls, value: dict[str, str]) -> dict[str, str]:
@@ -218,9 +210,6 @@ class Config(BaseModel):
 def resolve_settings(config: Config) -> ResolveSettings:
     """The pure resolver's knobs, taken from the validated config."""
     return ResolveSettings(
-        fuzzy_min_score=config.fuzzy_min_score,
-        fuzzy_min_lead=config.fuzzy_min_lead,
-        honorifics=tuple(config.honorifics),
         department_aliases=config.department_aliases,
         standing_cc_contact_page_id=config.standing_cc_contact_page_id,
     )

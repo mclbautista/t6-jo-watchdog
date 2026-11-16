@@ -267,7 +267,11 @@ class RetryScheduleTests(unittest.IsolatedAsyncioTestCase):
         caches.settings = SimpleNamespace(department_aliases={})
         caches.contact_for_telegram_user = lambda *a: None
         caches.departments = ["TOC"]
-        caches.resolve_people = lambda *a: PeopleResolution()
+
+        async def resolve_people(*args):
+            return PeopleResolution()
+
+        caches.resolve_people = resolve_people
         caches.resolve_project = lambda raw: ProjectResolution(page_id="proj")
         caches.resolve_department = lambda raw: DepartmentResolution(department="TOC")
         await p.worker.run_once()

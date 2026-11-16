@@ -2,24 +2,30 @@
 
 import json
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
-from jo_watchdog.app.caches import department_options, person_from_page, project_from_page
+from jo_watchdog.adapters.t6api import T6ApiError
+from jo_watchdog.app.caches import (
+    CacheManager,
+    department_options,
+    person_from_page,
+    project_from_page,
+)
+from jo_watchdog.app.config import Config
 from jo_watchdog.core.resolve import (
+    ContactMatch,
     MentionEntity,
-    PeopleIndex,
-    Person,
+    PeopleResolution,
     ResolveSettings,
-    normalize_aliases,
-    normalize_name,
     relation_properties,
     resolve_department,
-    resolve_mention,
-    resolve_people,
     resolve_project,
     split_mentions,
 )
+from jo_watchdog.ledger.db import Ledger
+from tests.fakes import FakeMatcher, resolved
 
 FIXTURES = Path(__file__).parent / "fixtures"
 NOTION = FIXTURES / "notion"
@@ -56,8 +62,47 @@ DEPARTMENTS = department_options(_load("job_orders_data_source.json"))
 SETTINGS = ResolveSettings(department_aliases={"TO": "TOC"}, standing_cc_contact_page_id=PRIYA)
 
 
-def resolve(mention, entities=()):
-    return resolve_mention(mention, "assignee", PeopleIndex(people()), SETTINGS, entities)
+ANSWERS = {
+    "Ramon": resolved(RAMON, "Ramon Reyes"),
+    "Lena": resolved(LENA, "Lena Cruz"),
+    "ate Lena": resolved(LENA, "Lena Cruz"),
+    "Mira": resolved(MIRA, "Mira Santos"),
+    "Paul": resolved(PAUL, "Paul Garcia", "fuzzy"),
+    "@user_two": resolved(RAE, "Rae", "normalized"),
+    "@user_four": resolved(JASON, "Jason", "normalized"),
+    "@user_six": resolved(LARA, "Lara", "normalized"),
+    "@priya": resolved(PRIYA, "Priya", "normalized"),
+    "5550001": resolved(MIRA, "Mira Santos", "exact_id"),
+    "Kim": ContactMatch(status="ambiguous"),
+}
+
+
+class ResolvedBy(unittest.IsolatedAsyncioTestCase):
+    """``CacheManager.resolve_people`` over a fake matcher with canned ``person find`` answers."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.ledger = Ledger(Path(tmp.name) / "ledger.db")
+        self.addCleanup(self.ledger.close)
+        self.matcher = FakeMatcher(ANSWERS)
+        config = Config(
+            intake_chat_id=-100123,
+            intake_topic_id=5,
+            ops_chat_id=-100999,
+            ops_topic_id=7,
+            job_orders_data_source_id="ds-1",
+            standing_cc_contact_page_id=PRIYA,
+        )
+        self.caches = CacheManager(
+            ledger=self.ledger, directory=None, matcher=self.matcher, config=config
+        )
+        self.caches._apply(
+            "people", [p.model_dump(mode="json") for p in people()], "2026-10-22T00:00:00Z"
+        )
+
+    async def resolve(self, assignees, cc=None, entities=()) -> PeopleResolution:
+        return await self.caches.resolve_people(assignees, cc, list(entities))
 
 
 class FixtureParsingTests(unittest.TestCase):
@@ -74,16 +119,6 @@ class FixtureParsingTests(unittest.TestCase):
         self.assertIn("COLD CUT", codes)
         self.assertIn("", codes)  # a project with no code is cached but never matches
         self.assertEqual(DEPARTMENTS, ["TOC", "AE", "OE", "COOR", "COLOR", "VFX", "SOUND", "ADMIN"])
-
-
-class NormalizationTests(unittest.TestCase):
-    def test_aliases_split_trim_casefold_and_drop_honorifics(self):
-        aliases = normalize_aliases(["Nina", "  sam ", "KUYA sam", ""])
-        self.assertEqual(aliases, ["nina", "sam", "sam"])
-
-    def test_honorifics_dropped_on_mention_side(self):
-        for raw in ("ate Lena", "Ate LENA", "sir lena", "kuya  Lena"):
-            self.assertEqual(normalize_name(raw), "lena")
 
 
 class MentionSplittingTests(unittest.TestCase):
@@ -108,7 +143,7 @@ class MentionSplittingTests(unittest.TestCase):
         ],
         "Ramon @user_two // @user_three": ["Ramon", "@user_two", "@user_three"],
         "@user_three  @user_one": ["@user_three", "@user_one"],
-        "ate @user_four / Ramon": ["ate @user_four", "Ramon"],
+        "ate @user_four / Ramon": ["ate", "@user_four", "Ramon"],
         "Ramon but maybe Lena": ["Ramon but maybe Lena"],
         "": [],
     }
@@ -119,122 +154,72 @@ class MentionSplittingTests(unittest.TestCase):
                 self.assertEqual(split_mentions(raw), expected)
 
 
-class PeopleStepTests(unittest.TestCase):
-    def test_step1_telegram_user_id_from_text_mention_entity(self):
-        entity = MentionEntity(text="Jadey", user_id="5550001")
-        result = resolve("Jadey", [entity])
+class PeopleResolutionTests(ResolvedBy):
+    async def test_statuses_follow_the_api_answer(self):
+        out = await self.resolve("Ramon / Kim / Zzyzx")
         self.assertEqual(
-            (result.status, result.method, result.page_id), ("resolved", "user_id", MIRA)
+            [(m.raw, m.status, m.method, m.page_id) for m in out.mentions],
+            [
+                ("Ramon", "resolved", "normalized", RAMON),
+                ("Kim", "ambiguous", None, None),
+                ("Zzyzx", "unresolved", None, None),
+            ],
+        )
+        self.assertEqual(out.assigned, [RAMON])
+        self.assertEqual(
+            [(f.code, f.params["raw"]) for f in out.findings],
+            [("ambiguous_person", "Kim"), ("unresolved_person", "Zzyzx")],
         )
 
-    def test_step2_handle_case_insensitive_with_or_without_at(self):
-        for raw, page_id in (("@user_three", NINA), ("@USER_ONE", JOSHUA), ("@user_five", JASON)):
-            with self.subTest(raw=raw):
-                result = resolve(raw)
-                self.assertEqual((result.method, result.page_id), ("handle", page_id))
+    async def test_one_call_carries_every_mention_of_the_message(self):
+        await self.resolve("Ramon, Lena", "@user_two")
+        self.assertEqual(self.matcher.calls, [["Ramon", "Lena", "@user_two"]])
 
-    def test_entity_for_jo_cannot_supply_identity_for_majo(self):
-        crowd = [
-            Person(page_id="p-jo", name="Jo Lim", telegram_user_id="123"),
-            Person(page_id="p-lena", name="Lena Cruz", aliases=["Lena"]),
-        ]
-        entity = MentionEntity(text="Jo", user_id="123")
-        result = resolve_mention("Lena", "assignee", PeopleIndex(crowd), SETTINGS, [entity])
-        self.assertEqual((result.method, result.page_id), ("alias", "p-lena"))
-        own = resolve_mention("Jo", "assignee", PeopleIndex(crowd), SETTINGS, [entity])
-        self.assertEqual((own.method, own.page_id), ("user_id", "p-jo"))
-
-    def test_handle_entity_binds_only_a_whole_handle_token(self):
-        crowd = [
-            Person(page_id="p-rae", name="Rae", telegram_handle="@rae"),
-            Person(page_id="p-raed", name="Raed", telegram_handle="@raed"),
-        ]
-        index = PeopleIndex(crowd)
-        entity = MentionEntity(text="@rae", handle="rae")
-        result = resolve_mention("@raed", "assignee", index, SETTINGS, [entity])
-        self.assertEqual(result.page_id, "p-raed")
-        spaced = resolve_mention("ate @rae", "assignee", index, SETTINGS, [entity])
-        self.assertEqual(spaced.page_id, "p-rae")
-
-    def test_step2_handle_from_mention_entity(self):
-        entity = MentionEntity(text="@user_two", handle="user_two")
-        result = resolve("@user_two", [entity])
-        self.assertEqual((result.method, result.page_id), ("handle", RAE))
-
-    def test_honorific_before_handle(self):
-        self.assertEqual(resolve("ate @user_six").page_id, LARA)
-
-    def test_step3_alias_with_honorifics_on_both_sides(self):
-        for raw in ("Lena", "ate Lena", "sam", "kuya sam", "sir Nina"):
-            with self.subTest(raw=raw):
-                result = resolve(raw)
-                self.assertEqual(result.method, "alias")
-        self.assertEqual(resolve("ate Lena").page_id, LENA)
-
-    def test_alias_collision_stays_ambiguous(self):
-        result = resolve("Kim")
-        self.assertEqual(result.status, "ambiguous")
-        self.assertIsNone(result.page_id)
-
-    def test_handle_guard_never_fuzzy(self):
-        # "Alec Gaba" exists with no handle; "@user_nine" must not fuzzy-match it.
-        result = resolve("@user_nine")
-        self.assertEqual(result.status, "unresolved")
-        self.assertIsNone(result.method)
-
-    def test_unknown_handle_unresolved(self):
-        self.assertEqual(resolve("@user_eight").status, "unresolved")
-
-    def test_fuzzy_pass(self):
-        result = resolve("Paul")
-        self.assertEqual(
-            (result.status, result.method, result.page_id), ("resolved", "fuzzy", PAUL)
-        )
-
-    def test_fuzzy_fail_low_score(self):
-        self.assertEqual(resolve("Zzyzx").status, "unresolved")
-
-    def test_fuzzy_fail_insufficient_lead(self):
-        crowd = [
-            Person(page_id="a", name="Paul Garcia"),
-            Person(page_id="b", name="Paula Garcia"),
-        ]
-        result = resolve_mention("Paul Garcia", "assignee", PeopleIndex(crowd), SETTINGS)
-        self.assertEqual(result.status, "unresolved")
-
-    def test_fuzzy_thresholds_are_configurable(self):
-        strict = ResolveSettings(fuzzy_min_score=99)
-        result = resolve_mention("Paul", "assignee", PeopleIndex(people()), strict)
-        self.assertEqual(result.status, "unresolved")
-
-    def test_hedge_is_one_ambiguous_mention(self):
-        result = resolve("Ramon but maybe Lena")
-        self.assertEqual(result.status, "ambiguous")
-        self.assertEqual(result.raw, "Ramon but maybe Lena")
-
-
-class ResolvePeopleTests(unittest.TestCase):
-    def test_multiple_assignees_standing_cc_always_in_cc(self):
-        out = resolve_people("Paul / Ramon", None, people(), SETTINGS)
-        self.assertEqual(out.assigned, [PAUL, RAMON])
+    async def test_no_mentions_make_no_call(self):
+        out = await self.resolve(None, "")
+        self.assertEqual(self.matcher.calls, [])
         self.assertEqual(out.cc, [PRIYA])
+
+    async def test_a_text_mention_entity_asks_by_telegram_user_id(self):
+        entity = MentionEntity(text="Jadey", user_id="5550001")
+        out = await self.resolve("Jadey", entities=[entity])
+        self.assertEqual(self.matcher.calls, [["5550001"]])
+        self.assertEqual((out.mentions[0].method, out.assigned), ("exact_id", [MIRA]))
+
+    async def test_a_mention_entity_asks_by_handle(self):
+        entity = MentionEntity(text="@user_two", handle="user_two")
+        out = await self.resolve("@user_two", entities=[entity])
+        self.assertEqual(self.matcher.calls, [["@user_two"]])
+        self.assertEqual(out.assigned, [RAE])
+
+    async def test_an_entity_cannot_supply_identity_for_another_mention(self):
+        entity = MentionEntity(text="Jo", user_id="123")
+        await self.resolve("Lena", entities=[entity])
+        self.assertEqual(self.matcher.calls, [["Lena"]])
+
+    async def test_a_handle_entity_binds_only_a_whole_handle_token(self):
+        entity = MentionEntity(text="@rae", handle="rae")
+        await self.resolve("@raed", entities=[entity])
+        self.assertEqual(self.matcher.calls, [["@raed"]])
+
+    async def test_a_bare_telegram_id_is_passed_on_as_written(self):
+        out = await self.resolve("5550001")
+        self.assertEqual(self.matcher.calls, [["5550001"]])
+        self.assertEqual(out.assigned, [MIRA])
+
+    async def test_a_fuzzy_match_is_written_with_a_finding(self):
+        out = await self.resolve("Paul / Ramon")
+        self.assertEqual(out.assigned, [PAUL, RAMON])
         self.assertEqual([f.code for f in out.findings], ["fuzzy_person"])
         self.assertEqual(out.findings[0].params["contact"], "Paul Garcia")
 
-    def test_standing_cc_not_duplicated_when_named(self):
-        out = resolve_people("Lena", "@priya, @user_six", people(), SETTINGS)
+    async def test_standing_cc_not_duplicated_when_named(self):
+        out = await self.resolve("Lena", "@priya, @user_six")
         self.assertEqual(out.cc, [PRIYA, LARA])
 
-    def test_names_without_separator_split_only_on_exact_aliases(self):
-        out = resolve_people("Ramon @user_two Mira Lena", None, people(), SETTINGS)
-        self.assertEqual(out.assigned, [RAMON, RAE, MIRA, LENA])
-        self.assertEqual(out.findings, [])
-        out = resolve_people("Mira Zzyzx", None, people(), SETTINGS)
-        self.assertEqual(out.assigned, [])
-        self.assertEqual(out.findings[0].params["raw"], "Mira Zzyzx")
-
-    def test_unresolved_and_ambiguous_mentions_quoted_as_written(self):
-        out = resolve_people("Ramon but maybe Lena / Kim", "@nobody", people(), SETTINGS)
+    async def test_a_hedged_mention_is_ambiguous_and_never_sent(self):
+        out = await self.resolve("Ramon but maybe Lena / Kim", "@nobody")
+        self.assertEqual(self.matcher.calls, [["Kim", "@nobody"]])
         self.assertEqual(out.assigned, [])
         self.assertEqual(
             [(f.code, f.params["raw"], f.params["role"]) for f in out.findings],
@@ -245,25 +230,48 @@ class ResolvePeopleTests(unittest.TestCase):
             ],
         )
 
-    def test_conditional_mention_stays_ambiguous_with_complete_wording(self):
-        out = resolve_people("Lena if available", "Mira kung free", people(), SETTINGS)
+    async def test_conditional_mention_stays_ambiguous_with_complete_wording(self):
+        out = await self.resolve("Lena if available", "Mira kung free")
+        self.assertEqual(self.matcher.calls, [])
         self.assertEqual(out.assigned, [])
         self.assertEqual(out.cc, [PRIYA])
         self.assertEqual(
             [(m.raw, m.status) for m in out.mentions],
             [("Lena if available", "ambiguous"), ("Mira kung free", "ambiguous")],
         )
-        self.assertEqual(
-            [f.params["raw"] for f in out.findings], ["Lena if available", "Mira kung free"]
-        )
 
-    def test_unconditional_mentions_beside_a_conditional_one_still_resolve(self):
-        out = resolve_people("ate Lena / Ramon, if abutin the next day", None, people(), SETTINGS)
+    async def test_unconditional_mentions_beside_a_conditional_one_still_resolve(self):
+        out = await self.resolve("ate Lena / Ramon, if abutin the next day")
+        self.assertEqual(self.matcher.calls, [["ate Lena", "ate", "Lena"]])
         self.assertEqual(out.assigned, [LENA])
         self.assertEqual(out.findings[0].params["raw"], "Ramon if abutin the next day")
 
-    def test_assignee_shifts_feed_deadline_resolver(self):
-        out = resolve_people("Ramon, Mira / ate Lena", None, people(), SETTINGS)
+    async def test_names_without_separator_split_only_when_every_word_is_known(self):
+        out = await self.resolve("Ramon @user_two Mira Lena")
+        self.assertEqual(out.assigned, [RAMON, RAE, MIRA, LENA])
+        self.assertEqual(out.findings, [])
+        self.assertEqual(len(self.matcher.calls), 1)
+        out = await self.resolve("Mira Zzyzx")
+        self.assertEqual(out.assigned, [])
+        self.assertEqual(out.findings[0].params["raw"], "Mira Zzyzx")
+
+    async def test_a_title_before_a_handle_belongs_to_the_handle(self):
+        out = await self.resolve("ate @user_four / Ramon")
+        self.assertEqual(self.matcher.calls[0][:3], ["ate", "@user_four", "Ramon"])
+        self.assertEqual(out.assigned, [JASON, RAMON])
+        self.assertEqual(out.findings, [])
+        self.assertEqual(out.mentions[0].raw, "ate @user_four")
+
+    async def test_a_known_name_before_a_handle_is_its_own_person(self):
+        out = await self.resolve("Ramon @user_two")
+        self.assertEqual(out.assigned, [RAMON, RAE])
+
+    async def test_an_unknown_title_and_handle_make_one_unresolved_mention(self):
+        out = await self.resolve("ate @nobody")
+        self.assertEqual([(m.raw, m.status) for m in out.mentions], [("ate @nobody", "unresolved")])
+
+    async def test_assignee_shifts_come_from_the_cached_contacts(self):
+        out = await self.resolve("Ramon, Mira / Lena")
         shifts = [(s.name, s.end_of_shift) for s in out.assignee_shifts]
         self.assertEqual(
             shifts,
@@ -274,13 +282,19 @@ class ResolvePeopleTests(unittest.TestCase):
             ],
         )
 
-    def test_no_assignee_resolved_gives_empty_shifts(self):
-        out = resolve_people("@user_eight", None, people(), SETTINGS)
+    async def test_no_assignee_resolved_gives_empty_shifts(self):
+        out = await self.resolve("@user_eight")
         self.assertEqual(out.assignee_shifts, [])
 
-    def test_no_standing_cc_config_means_no_standing_cc(self):
-        out = resolve_people("Ramon", None, people(), ResolveSettings())
+    async def test_no_standing_cc_config_means_no_standing_cc(self):
+        self.caches.settings = ResolveSettings()
+        out = await self.resolve("Ramon")
         self.assertEqual(out.cc, [])
+
+    async def test_when_the_api_cannot_answer_nothing_is_resolved(self):
+        self.matcher.down = True
+        with self.assertRaises(T6ApiError):
+            await self.resolve("Ramon")
 
 
 class ProjectTests(unittest.TestCase):
@@ -317,7 +331,7 @@ class ProjectTests(unittest.TestCase):
 
 class RelationPropertyTests(unittest.TestCase):
     def test_only_resolved_ids_and_no_coordinator(self):
-        people_out = resolve_people("Ramon / @nobody", None, people(), SETTINGS)
+        people_out = PeopleResolution(assigned=[RAMON], cc=[PRIYA])
         props = relation_properties(people_out, resolve_project("NOPE", projects()))
         self.assertEqual(
             props,
@@ -360,30 +374,32 @@ class DepartmentTests(unittest.TestCase):
         self.assertFalse(resolve_department("TOC", ["GRADE"], {}).valid)
 
 
-class CorpusTests(unittest.TestCase):
+class CorpusPeopleTests(ResolvedBy):
     """Every corpus JO resolves without error; Priya is always in cc."""
 
     ASSIGNED_RE = re.compile(r"^\s*assigned(?: to)?\s*:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
     CC_RE = re.compile(r"^\s*cc\s*:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+
+    async def test_every_jo_resolves_and_keeps_standing_cc(self):
+        corpus = json.loads((FIXTURES / "redacted_corpus.json").read_text(encoding="utf-8"))
+        for i, text in enumerate(corpus):
+            a = self.ASSIGNED_RE.search(text)
+            c = self.CC_RE.search(text)
+            out = await self.resolve(a.group(1) if a else None, c.group(1) if c else None)
+            self.assertIn(PRIYA, out.cc, i)
+            self.assertEqual(len(out.assigned), len(set(out.assigned)), i)
+            for mention in out.mentions:
+                if mention.status != "resolved":
+                    self.assertIsNone(mention.page_id)
+
+
+class CorpusTests(unittest.TestCase):
+    """Every corpus department token validates."""
+
     HEADER_RE = re.compile(r"^(?:JO CODE:\s*)?\\?(.+?)\s*-\s*([A-Za-z]+)\s*-", re.IGNORECASE)
 
     def setUp(self):
         self.corpus = json.loads((FIXTURES / "redacted_corpus.json").read_text(encoding="utf-8"))
-        self.index = PeopleIndex(people())
-
-    def test_every_jo_resolves_and_keeps_standing_cc(self):
-        for i, text in enumerate(self.corpus):
-            with self.subTest(i=i):
-                a = self.ASSIGNED_RE.search(text)
-                c = self.CC_RE.search(text)
-                out = resolve_people(
-                    a.group(1) if a else None, c.group(1) if c else None, self.index, SETTINGS
-                )
-                self.assertIn(PRIYA, out.cc)
-                self.assertEqual(len(out.assigned), len(set(out.assigned)))
-                for mention in out.mentions:
-                    if mention.status != "resolved":
-                        self.assertIsNone(mention.page_id)
 
     def test_corpus_department_tokens_all_validate(self):
         tokens = set()

@@ -37,7 +37,7 @@ Side effects, by step:
   the production matcher. Both need explicit authorization and cost tokens. They print the
   returned snapshot, token counts, probabilities and any ``Retry-After``/``X-RateLimit-*``
   headers; a 429 is reported only if one actually came back.
-- ``threshold_tuning`` is offline: it scores the redacted corpus, rewrites
+- ``threshold_tuning`` is offline: it scores the recorded Jev answers, rewrites
   ``docs/tuning/threshold-results.json`` and stays MANUAL until the owner attests the
   review. It never edits config or enables linking.
 - ``unknown_select`` (only with ``--probe-unknown-select``) creates a second
@@ -97,7 +97,6 @@ from pathlib import Path
 
 from jo_watchdog.adapters.notion import NotionAdapter, NotionError, QueryRequest
 from jo_watchdog.adapters.protocols import ClassifyResult, IncomingUpdate
-from jo_watchdog.app.caches import person_from_page
 from jo_watchdog.app.config import (
     SECRET_KEYS,
     Config,
@@ -105,7 +104,6 @@ from jo_watchdog.app.config import (
     missing_secrets,
     placeholder_keys,
     require_live_keys,
-    resolve_settings,
 )
 from jo_watchdog.app.model_smoke import ModelCheck, check_deepseek, check_jev
 from jo_watchdog.app.smoke_gate import (
@@ -133,14 +131,7 @@ from jo_watchdog.app.smoke_probes import (
     load_forward_fixtures,
 )
 from jo_watchdog.app.smoke_scenarios import SCENARIOS
-from jo_watchdog.app.tuning import (
-    assignee_mentions,
-    build_report,
-    fuzzy_cases,
-    match_samples,
-    read_report,
-    write_report,
-)
+from jo_watchdog.app.tuning import build_report, match_samples, read_report, write_report
 from jo_watchdog.app.wiring import build_adapters, build_worker, missing_wiring
 from jo_watchdog.core.extraction import EXTRACTED_FIELDS, PROMPT_TAG, Extraction
 from jo_watchdog.core.masker import WITHHELD, outbound_text
@@ -721,39 +712,24 @@ async def step_jev(s: Smoke) -> Result:
 
 
 async def step_threshold_tuning(s: Smoke) -> Result:
-    """Score the corpus offline, retain the results, and leave the review to the owner."""
+    """Score the recorded Jev answers offline, retain the results; the owner reviews them."""
     fixtures = ROOT / "tests/fixtures"
-    corpus = json.loads((fixtures / "redacted_corpus.json").read_text(encoding="utf-8"))
-    pages = []
-    for name in ("contacts_query_page1.json", "contacts_query_page2.json"):
-        pages += json.loads((fixtures / "notion" / name).read_text(encoding="utf-8"))["results"]
-    settings = resolve_settings(s.config)
-    cases = fuzzy_cases(assignee_mentions(corpus), [person_from_page(p) for p in pages], settings)
     pairs = json.loads((fixtures / "jev/regression_pairs.json").read_text(encoding="utf-8"))
     out = ROOT / "docs/tuning/threshold-results.json"
     report = build_report(
-        corpus_size=len(corpus),
-        cases=cases,
         samples=match_samples(pairs),
-        current={
-            "fuzzy_min_score": s.config.fuzzy_min_score,
-            "fuzzy_min_lead": s.config.fuzzy_min_lead,
-            "t_link": s.config.t_link,
-            "t_hint": s.config.t_hint,
-        },
+        current={"t_link": s.config.t_link, "t_hint": s.config.t_hint},
         sample_source="recorded regression pairs (synthesized until a live capture is retained)",
         previous=read_report(out),
     )
     write_report(out, report)
     results = report["results"]
-    print(f"    {len(corpus)} corpus messages; {len(cases)} mentions reach fuzzy matching")
-    print(f"    {results['match_samples']} recorded Jev answers; "
-          f"{len(results['refused_loosening'])} looser fuzzy point(s) refused")
+    print(f"    {results['match_samples']} recorded Jev answers")
     print(f"    results retained at {out.relative_to(ROOT)} (digest {report['results_digest']})")
     review = report["owner_review"]
     if review["status"] != "reviewed":
         return manual(
-            "owner must review the fuzzy/link/hint thresholds in the retained results and "
+            "owner must review the link/hint thresholds in the retained results and "
             "attest (actor, time, scope, evidence); linking stays disabled"
         )
     return ok(f"owner review by {review['reviewed_by']} covers digest {report['results_digest']}")

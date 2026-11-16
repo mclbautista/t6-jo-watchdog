@@ -10,7 +10,15 @@ from jo_watchdog.app.config import Config
 from jo_watchdog.app.worker import Worker
 from jo_watchdog.ledger.db import Ledger
 from jo_watchdog.ledger.states import State
-from tests.fakes import FakeClassifier, FakeNotion, FakeTelegram, RecordedDirectory, update
+from tests.fakes import (
+    FakeClassifier,
+    FakeMatcher,
+    FakeNotion,
+    FakeTelegram,
+    RecordedDirectory,
+    resolved,
+    update,
+)
 
 JOB_ORDERS = "3d8fb4d5-9e59-8073-a0d0-000b77632947"
 PRIYA = "c0000000-0000-4000-8000-000000000001"
@@ -46,6 +54,7 @@ class CacheTestCase(unittest.IsolatedAsyncioTestCase):
         self.path = Path(self.tmp.name) / "ledger.db"
         self.ledger = Ledger(self.path)
         self.server = RecordedDirectory()
+        self.matcher = FakeMatcher()
         self.clock = Clock()
 
     async def asyncTearDown(self):
@@ -56,6 +65,7 @@ class CacheTestCase(unittest.IsolatedAsyncioTestCase):
         return CacheManager(
             ledger=ledger or self.ledger,
             directory=self.server,
+            matcher=self.matcher,
             config=config(**overrides),
             clock=self.clock,
         )
@@ -102,7 +112,11 @@ class RefreshTests(CacheTestCase):
     async def test_resolution_through_manager(self):
         caches = self.manager()
         await caches.refresh()
-        people = caches.resolve_people("Ramon / @user_two", None)
+        self.matcher.contacts = {
+            "ramon": resolved("c-ramon", "Ramon Dela Cruz"),
+            "@user_two": resolved("c-two", "Two"),
+        }
+        people = await caches.resolve_people("Ramon / @user_two", None)
         self.assertEqual(len(people.assigned), 2)
         self.assertEqual(people.cc, [PRIYA])
         self.assertEqual(caches.resolve_project("MFG - TOC").code, "MFG")

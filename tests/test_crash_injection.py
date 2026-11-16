@@ -29,7 +29,7 @@ from jo_watchdog.app.caches import FORMAT_VERSION, CacheManager
 from jo_watchdog.core.matching import Candidate, CandidateDecision, MatchResult
 from jo_watchdog.ledger.db import Ledger
 from tests.clockwork import KEY, Crash, Pipeline
-from tests.fakes import FakeClassifier, FakeNotion, FakeTelegram, ok_result, update
+from tests.fakes import FakeClassifier, FakeMatcher, FakeNotion, FakeTelegram, ok_result, update
 
 CHANNEL = {
     "type": "channel",
@@ -396,7 +396,13 @@ class JevPipeline(Pipeline):
             self.ledger.save_cache_snapshot(kind, FORMAT_VERSION, payload, len(payload), fetched_at)
 
     def make_worker(self, ledger, **overrides):
-        caches = QuietCaches(ledger=ledger, directory=None, config=self.config, clock=self.clock)
+        caches = QuietCaches(
+            ledger=ledger,
+            directory=None,
+            matcher=FakeMatcher(),
+            config=self.config,
+            clock=self.clock,
+        )
         if ledger.latest_cache_snapshot("projects") is None:
             self.ledger = ledger
             self.seed_caches()

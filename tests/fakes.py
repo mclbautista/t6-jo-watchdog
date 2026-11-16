@@ -12,6 +12,7 @@ from jo_watchdog.adapters.t6api import T6ApiError
 from jo_watchdog.app.caches import department_options, person_from_page, project_from_page
 from jo_watchdog.core.deadline import parse_shift_hour
 from jo_watchdog.core.extraction import EXTRACTED_FIELDS, PROMPT_TAG, Extraction
+from jo_watchdog.core.resolve import ContactMatch
 
 # 2026-09-28 03:00:00 UTC = 11:00 in Manila.
 POSTED_AT_UNIX = 1790564400
@@ -275,3 +276,28 @@ class RecordedDirectory:
     async def departments(self) -> list[str]:
         self._enter("departments")
         return department_options(_recorded("job_orders_data_source.json"))
+
+
+def resolved(page_id: str, name: str, method: str = "normalized") -> ContactMatch:
+    """A ``person find`` answer with a match."""
+    return ContactMatch(status="resolved", method=method, page_id=page_id, name=name)
+
+
+class FakeMatcher:
+    """Canned ``person find`` answers: a mention (case-folded) maps to its answer, else unresolved.
+
+    ``down`` makes every call fail the way an unreachable API does.
+    """
+
+    def __init__(self, contacts: dict[str, ContactMatch] | None = None):
+        self.contacts = {k.casefold(): v for k, v in (contacts or {}).items()}
+        self.calls: list[list[str]] = []
+        self.down = False
+
+    async def find_contacts(self, mentions: list[str]) -> list[ContactMatch]:
+        self.calls.append(list(mentions))
+        if self.down:
+            raise T6ApiError("t6 API unavailable: connection refused")
+        return [
+            self.contacts.get(m.casefold(), ContactMatch(status="unresolved")) for m in mentions
+        ]

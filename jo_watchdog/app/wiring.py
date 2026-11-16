@@ -102,7 +102,9 @@ def _build_telegram(config: Config):
 
 def build_worker(config: Config, ledger: Ledger, adapters: Adapters, **worker_options) -> Worker:
     """The production worker: caches loaded; Notion writes Job Orders and lists Deliverables."""
-    caches = CacheManager(ledger=ledger, directory=adapters.t6api, config=config)
+    caches = CacheManager(
+        ledger=ledger, directory=adapters.t6api, matcher=adapters.t6api, config=config
+    )
     caches.load_persisted()  # last good snapshots first, then the live refresh
     return Worker(
         ledger=ledger,

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from jo_watchdog.core.extraction import Extraction
 from jo_watchdog.core.matching import Candidate, MatchResult
+from jo_watchdog.core.resolve import ContactMatch
 
 
 class IncomingUpdate(BaseModel):
@@ -133,6 +134,18 @@ class DirectoryReader(Protocol):
 
     async def departments(self) -> list[str]:
         """Department names, MISC included."""
+        ...
+
+
+@runtime_checkable
+class ContactMatcher(Protocol):
+    """Contact matching by the t6 API (``person find``)."""
+
+    async def find_contacts(self, mentions: list[str]) -> list[ContactMatch]:
+        """One answer for each mention, in order, from one call.
+
+        Raises ``T6ApiError`` when the API cannot answer; the caller holds the message.
+        """
         ...
 
 

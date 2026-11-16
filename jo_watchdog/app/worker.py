@@ -26,6 +26,7 @@ from jo_watchdog.adapters.protocols import (
     PageRef,
     TelegramClient,
 )
+from jo_watchdog.adapters.t6api import T6ApiError
 from jo_watchdog.app.caches import CacheManager
 from jo_watchdog.app.config import Config
 from jo_watchdog.app.matching import ResolvedProject, run_match_stage, with_deliverable
@@ -457,7 +458,7 @@ class Worker:
                 return
 
             # Plan and resolution are decided here, once, before any external call.
-            plan = self._build_plan(msg)
+            plan = await self._build_plan(msg)
             if plan is None:
                 return
             dup_key = self._annotate_duplicate(msg, plan)
@@ -481,11 +482,13 @@ class Worker:
             return
         await self._create(msg, plan)
 
-    def _build_plan(self, msg: dict) -> JobOrderPlan | None:
+    async def _build_plan(self, msg: dict) -> JobOrderPlan | None:
         """Plan one extracted message: the #21 planner fed by the #22 resolvers.
 
         Without caches nothing is resolved: no relations, no Department check
-        and no shift deadlines.
+        and no shift deadlines. Contacts and Projects are matched by the t6 API; while it
+        cannot answer there is no plan: the message stays ``extracted`` (no attempt is
+        spent) and the next drain asks again.
         """
         key = msg["telegram_key"]
         stored = (self.ledger.stage_result(key, "extract") or {}).get("extraction")
@@ -504,9 +507,13 @@ class Worker:
                 project_raw, department_token = header.project, header.department
             else:
                 project_raw, department_token = extraction.project_raw, extraction.department_raw
-            people = caches.resolve_people(
-                extraction.assignees_raw, extraction.cc_raw, mention_entities(message)
-            )
+            try:
+                people = await caches.resolve_people(
+                    extraction.assignees_raw, extraction.cc_raw, mention_entities(message)
+                )
+            except T6ApiError as exc:
+                log.warning("t6 API cannot match %s yet; holding: %s", key, exc)
+                return None
             project = caches.resolve_project(project_raw)
             department = caches.resolve_department(department_token)
 

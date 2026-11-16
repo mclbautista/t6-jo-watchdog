@@ -21,19 +21,21 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from jo_watchdog.adapters.protocols import DirectoryReader
+from jo_watchdog.adapters.protocols import ContactMatcher, DirectoryReader
 from jo_watchdog.app.config import Config, resolve_settings
 from jo_watchdog.core.resolve import (
     DepartmentResolution,
     MentionEntity,
-    PeopleIndex,
     PeopleResolution,
     Person,
     ProjectEntry,
     ProjectResolution,
+    mention_results,
+    merge_leads,
     normalize_handle,
+    people_mentions,
+    people_resolution,
     resolve_department,
-    resolve_people,
     resolve_project,
 )
 from jo_watchdog.ledger.db import Ledger
@@ -149,11 +151,13 @@ class CacheManager:
         *,
         ledger: Ledger,
         directory: DirectoryReader,
+        matcher: ContactMatcher,
         config: Config,
         clock: Callable[[], datetime] = _utcnow,
     ):
         self.ledger = ledger
         self.directory = directory
+        self.matcher = matcher
         self.config = config
         self.settings = resolve_settings(config)
         self.clock = clock
@@ -162,7 +166,6 @@ class CacheManager:
         self.departments: list[str] | None = None
         self.fetched_at: dict[str, str] = {}
         self.last_attempt: datetime | None = None
-        self._people_index: PeopleIndex | None = None
         self._stale_reported: set[str] = set()
 
     # -- loading -------------------------------------------------------------
@@ -180,7 +183,6 @@ class CacheManager:
     def _apply(self, kind: str, payload: list, fetched_at: str) -> None:
         if kind == "people":
             self.people = [Person(**p) for p in payload]
-            self._people_index = PeopleIndex(self.people, self.settings.honorifics)
         elif kind == "projects":
             self.projects = [ProjectEntry(**p) for p in payload]
         else:
@@ -255,34 +257,46 @@ class CacheManager:
             self.people is not None and self.projects is not None and self.departments is not None
         )
 
-    def resolve_people(
+    async def resolve_people(
         self,
         assignees_raw: str | None,
         cc_raw: str | None,
         entities: list[MentionEntity] | None = None,
     ) -> PeopleResolution:
-        if self._people_index is None:
+        """Match the message's mentions with one ``person find`` call.
+
+        Raises ``T6ApiError`` when the API cannot answer: the worker holds the message.
+        """
+        if self.people is None:
             raise RuntimeError("People cache has not loaded; hold planning")
-        return resolve_people(
-            assignees_raw, cc_raw, self._people_index, self.settings, entities or []
-        )
+        mentions = people_mentions(assignees_raw, cc_raw, entities or [])
+        asked = [m for m in mentions if not m.hedged]
+        # One call: the mentions, then the words of each name with no separator (``Mira Lena``).
+        queries = [m.query for m in asked] + [w for m in asked for w in m.words]
+        answers = await self.matcher.find_contacts(queries) if queries else []
+        matches = iter(answers[: len(asked)])
+        word_matches = iter(answers[len(asked) :])
+        groups = [
+            mention_results(
+                m, None if m.hedged else next(matches), [next(word_matches) for _ in m.words]
+            )
+            for m in mentions
+        ]
+        return people_resolution(merge_leads(mentions, groups), self.people, self.settings)
 
     def contact_for_telegram_user(self, user_id: int | None, username: str | None) -> str | None:
         """The one Contact whose TelegramUserID or TelegramHandle matches, else None.
 
         Used only for the source block's bracketed name (#24); never a relation.
         """
-        index = self._people_index
-        if index is None:
-            return None
-        ids: set[str] = set()
+        people = self.people or []
+        found = []
         if user_id is not None:
-            ids = index.by_user_id.get(str(user_id), set())
-        if not ids and username:
-            ids = index.by_handle.get(normalize_handle(username), set())
-        if len(ids) != 1:
-            return None
-        return index.people[next(iter(ids))].name
+            found = [p for p in people if p.telegram_user_id.strip() == str(user_id)]
+        handle = normalize_handle(username or "")
+        if not found and handle:
+            found = [p for p in people if normalize_handle(p.telegram_handle) == handle]
+        return found[0].name if len(found) == 1 else None
 
     def resolve_project(self, project_raw: str | None) -> ProjectResolution:
         if self.projects is None:

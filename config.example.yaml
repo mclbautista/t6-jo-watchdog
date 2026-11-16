@@ -42,9 +42,6 @@ projects_data_source_id: "cc1dc02a-8f32-4c97-81e4-dc1e08d7f134"
 standing_cc_contact_page_id: "00000000-0000-0000-0000-000000000000"  # FILL IN: Contacts page id of the standing cc on every JO
 cache_refresh_hours: 6
 cache_stale_alert_hours: 24
-fuzzy_min_score: 90
-fuzzy_min_lead: 8
-honorifics: [ate, kuya, sir]
 
 # --- Ops reporting (#23) ---
 ops_chat_id: -1000000000001         # FILL IN: the ops supergroup's chat id

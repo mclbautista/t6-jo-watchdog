@@ -10,11 +10,12 @@ from pathlib import Path
 from t6.client import APIError, Unavailable
 from t6.verbs import Ambiguous, Done, Refused
 
-from jo_watchdog.adapters.protocols import DirectoryReader, JobOrderReader
+from jo_watchdog.adapters.protocols import ContactMatcher, DirectoryReader, JobOrderReader
 from jo_watchdog.adapters.t6api import T6Api, T6ApiError
 from jo_watchdog.app.caches import CacheManager, person_from_api
 from jo_watchdog.core.deadline import resolve_deadline
 from jo_watchdog.ledger.db import Ledger
+from tests.fakes import FakeMatcher, resolved
 from tests.test_caches import config
 
 PERSON = {
@@ -51,6 +52,9 @@ class FakeClient:
 
     def departments(self, inputs):
         return self._answer("departments", inputs)
+
+    def person_find(self, inputs):
+        return self._answer("person_find", inputs)
 
     def jo_find(self, inputs):
         return self._answer("jo_find", inputs)
@@ -103,6 +107,68 @@ class OutcomeMappingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.inputs["jo_get"].ref, "p-1")
 
 
+def found(match, method="normalized", *, review=False, candidates=()):
+    return {
+        "match": match,
+        "method": method,
+        "score": 1.0,
+        "needs_review": review,
+        "reason": None,
+        "candidates": list(candidates),
+    }
+
+
+class FindContactsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_one_call_answers_every_mention_in_order(self):
+        client = FakeClient(
+            person_find=Done(
+                result={
+                    "results": [
+                        found({"page_id": "c-ana", "name": "Ana Reyes"}, "exact_id"),
+                        found(None, "review", review=True, candidates=[{"page_id": "c-1"}]),
+                        found(None, "none"),
+                    ]
+                }
+            )
+        )
+        matches = await T6Api(client).find_contacts(["@ana_r", "Kim", "Zzyzx"])
+        self.assertEqual(client.inputs["person_find"].mentions, ["@ana_r", "Kim", "Zzyzx"])
+        self.assertEqual(
+            [(m.status, m.method, m.page_id, m.name) for m in matches],
+            [
+                ("resolved", "exact_id", "c-ana", "Ana Reyes"),
+                ("ambiguous", None, None, None),
+                ("unresolved", None, None, None),
+            ],
+        )
+
+    async def test_more_mentions_than_one_call_takes_go_in_batches(self):
+        calls = []
+
+        def answer():
+            batch = calls[-1]
+            return Done(result={"results": [found(None, "none") for _ in batch]})
+
+        class Batching(FakeClient):
+            def person_find(self, inputs):
+                calls.append(inputs.mentions)
+                return answer()
+
+        matches = await T6Api(Batching()).find_contacts([f"n{i}" for i in range(120)])
+        self.assertEqual([len(c) for c in calls], [50, 50, 20])
+        self.assertEqual(len(matches), 120)
+
+    async def test_a_down_or_refusing_api_raises(self):
+        for answer in (Unavailable("down"), Refused(rule="input", reason="too many")):
+            with self.subTest(answer=answer):
+                api = T6Api(FakeClient(person_find=answer))
+                with self.assertRaises(T6ApiError):
+                    await api.find_contacts(["Ana"])
+
+    async def test_the_seam_satisfies_the_matcher_protocol(self):
+        self.assertIsInstance(T6Api(FakeClient()), ContactMatcher)
+
+
 class ThreadingTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_hung_call_does_not_stall_the_event_loop_and_times_out(self):
         release = threading.Event()
@@ -151,6 +217,7 @@ class CachesOverTheApiTests(unittest.IsolatedAsyncioTestCase):
         return CacheManager(
             ledger=self.ledger,
             directory=T6Api(client),
+            matcher=FakeMatcher({"Ana": resolved("c-ana", "Ana Reyes")}),
             config=config(),
             clock=lambda: self.now,
         )
@@ -178,7 +245,7 @@ class CachesOverTheApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_parsed_shift_reaches_the_deadline_rule_unchanged(self):
         caches = self.manager(self.client())
         await caches.refresh()
-        shifts = caches.resolve_people("Ana", None).assignee_shifts
+        shifts = (await caches.resolve_people("Ana", None)).assignee_shifts
         posted = datetime(2026, 10, 22, 9, 0, tzinfo=UTC)
         result = resolve_deadline(
             "end of shift", posted, [(s.name, s.end_of_shift) for s in shifts]
