@@ -30,6 +30,7 @@ class Adapters:
     t6api: object
     classifier: object
     matcher: object | None
+    message_filter: object | None = None
     closers: list = field(default_factory=list)
 
     def with_(self, **replacements) -> Adapters:
@@ -47,6 +48,7 @@ def build_adapters(config: Config) -> Adapters:
 
     from jo_watchdog.adapters.t6api import T6Api
     from jo_watchdog.adapters.t6decide import T6DecideMatcher
+    from jo_watchdog.adapters.t6filter import T6Filter
     from jo_watchdog.adapters.t6llm import T6LlmClassifier
 
     t6api = T6Api(Client(t6_api_url(), t6_api_secret()))
@@ -60,12 +62,18 @@ def build_adapters(config: Config) -> Adapters:
         timeout_seconds=config.llm_timeout_seconds,
     )
 
+    message_filter = T6Filter(
+        Client(t6_api_url(), t6_api_secret(), timeout=config.llm_timeout_seconds),
+        timeout_seconds=config.llm_timeout_seconds,
+    )
+
     telegram, close_telegram = _build_telegram(config)
     return Adapters(
         telegram=telegram,
         t6api=t6api,
         classifier=classifier,
         matcher=matcher,
+        message_filter=message_filter,
         closers=[close_telegram],
     )
 
@@ -105,6 +113,7 @@ def build_worker(config: Config, ledger: Ledger, adapters: Adapters, **worker_op
         caches=caches,
         matcher=adapters.matcher,
         deliverables=adapters.t6api,
+        message_filter=adapters.message_filter,
         **worker_options,
     )
 

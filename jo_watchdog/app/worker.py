@@ -181,6 +181,7 @@ class Worker:
         caches: CacheManager | None = None,
         matcher: DeliverableMatcher | None = None,
         deliverables: DeliverableSource | None = None,
+        message_filter=None,
         clock: Callable[[], datetime] = _utcnow,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         deadman_interval: float = DEADMAN_CHECK_SECONDS,
@@ -193,6 +194,7 @@ class Worker:
         self.caches = caches
         self.matcher = matcher
         self.deliverables = deliverables
+        self.message_filter = message_filter
         self.clock = clock
         self.sleep = sleep
         self.deadman_interval = deadman_interval
@@ -347,6 +349,39 @@ class Worker:
             await self.process(key)
             self._beat()
 
+    async def _filtered_out(self, msg: dict, raw_message: dict) -> bool:
+        """Ask ``llm filter`` once per message; True only for a ``drop`` with drops switched on.
+
+        Count first: the verdict is stored and extraction goes on unless ``filter_drops`` is set.
+        A failed call is the verdict ``unavailable`` and never holds or drops the message.
+        """
+        key = msg["telegram_key"]
+        if self.message_filter is None:
+            return False
+        verdict = msg.get("filter_verdict")
+        if verdict is None:
+            rule = self.config.filter_rule(msg["chat_id"], self.config.intake_topic_id)
+            if rule is None:
+                return False
+            reply = raw_message.get("reply_to_message") or {}
+            # In a topic, Telegram points ``reply_to_message`` at the topic's first post.
+            parent = (
+                None
+                if "forum_topic_created" in reply
+                else reply.get("text") or reply.get("caption")
+            )
+            result = await self.message_filter.filter(rule, msg["text"], parent)
+            verdict = result.verdict
+            self.ledger.record_filter_verdict(key, verdict)
+            if result.failure:
+                log.warning(
+                    "filter unavailable for %s (%s); going on to extraction", key, result.failure
+                )
+        if verdict == "drop" and self.config.filter_drops:
+            self.ledger.record_filtered(key)
+            return True
+        return False
+
     async def classify(self, msg: dict) -> State:
         """Run the classify/extract stage for a ``received`` message; return its new state."""
         key = msg["telegram_key"]
@@ -355,6 +390,8 @@ class Worker:
             return State.IGNORED
 
         raw_message = json.loads(msg["raw_source"]).get("message") or {}
+        if await self._filtered_out(msg, raw_message):
+            return State.IGNORED
         result = await self.classifier.classify(msg["text"], forward_origin_lines(raw_message))
         trace = result.model_dump(exclude={"extraction", "retry_after"})
         call = {
@@ -811,7 +848,9 @@ class Worker:
         """Dry-run stops at `planned`: post the masked plan to ops, write nothing."""
         text = render_dry_run_plan(
             plan=plan.model_dump(mode="json"),
-            intake_url=intake_link(msg["chat_id"], self.config.intake_topic_id, msg["message_id"]),
+            intake_url=intake_link(
+                msg["chat_id"], self.config.intake_topic_id, msg["message_id"]
+            ),
         )
         self.ledger.enqueue_system(
             OutboxMessage(
@@ -940,9 +979,7 @@ class Worker:
             name=plan.name,
             findings=findings,
             page_url=page_url,
-            intake_url=intake_link(
-                msg["chat_id"], self.config.intake_topic_id, msg["message_id"]
-            ),
+            intake_url=intake_link(msg["chat_id"], self.config.intake_topic_id, msg["message_id"]),
             original_url=origin.original_link if origin else None,
             standing_cc_handle=self.config.standing_cc_telegram_handle,
         )

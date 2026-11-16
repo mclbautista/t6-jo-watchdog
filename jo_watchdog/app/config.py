@@ -60,6 +60,19 @@ SECRET_KEYS = (
 GATEWAY_SECRET_KEY = "WATCHDOG_SECRET"
 
 
+class FilterEntry(BaseModel):
+    """One chat (and optionally one topic) and the t6-core filter rule that applies to it.
+
+    The rule's question and thresholds live in t6-core; only its name is configured here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    chat_id: int
+    topic_id: int | None = None
+    rule: str = Field(min_length=1, max_length=200)
+
+
 class Config(BaseModel):
     """Validated runtime configuration."""
 
@@ -93,6 +106,12 @@ class Config(BaseModel):
     # provider timeout is 60 s, so a shorter wait here would cut off a call that is still running.
     llm_model_hint: str = "deepseek-chat"
     llm_timeout_seconds: float = Field(default=70, ge=70)
+
+    # Filter before extraction (#153): ``llm filter`` per message, by chat and topic. ``None``
+    # filters the intake topic with the rule ``job_order``; ``[]`` filters nothing. Count first:
+    # while ``filter_drops`` is false the verdict is stored and every message is still extracted.
+    filters: list[FilterEntry] | None = None
+    filter_drops: bool = False
 
     # Live resolution caches (#22)
     standing_cc_contact_page_id: str | None = None
@@ -163,6 +182,20 @@ class Config(BaseModel):
         if not value or any(step <= 0 for step in value):
             raise ValueError("retry_schedule_seconds must be a non-empty list of positive ints")
         return value
+
+    def filter_rule(self, chat_id: int, topic_id: int | None) -> str | None:
+        """The filter rule for a chat and topic, or ``None`` when it is not filtered."""
+        entries = self.filters
+        if entries is None:
+            entries = [
+                FilterEntry(
+                    chat_id=self.intake_chat_id, topic_id=self.intake_topic_id, rule="job_order"
+                )
+            ]
+        for entry in entries:
+            if entry.chat_id == chat_id and entry.topic_id in (None, topic_id):
+                return entry.rule
+        return None
 
     @model_validator(mode="after")
     def _cross_field(self) -> Config:

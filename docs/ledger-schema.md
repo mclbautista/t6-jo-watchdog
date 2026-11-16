@@ -52,7 +52,8 @@ keys before commit, so tables that reference `messages(id)` stay valid.
 | next_attempt_at    | TEXT    | ISO-8601 UTC; when a failed stage may run again (v3) |
 | last_error         | TEXT    | `<failure class>: <detail>` of the last failed attempt (v3) |
 | verdict            | TEXT    | DeepSeek verdict: `jo`, `unsure` or `not_jo` (v3)  |
-| ignore_reason      | TEXT    | `not_jo` or `no_text` for `ignored` rows (v3)      |
+| ignore_reason      | TEXT    | `not_jo`, `no_text` or `filtered` for `ignored` rows (v3) |
+| filter_verdict     | TEXT    | v13 (#153): the `llm filter` verdict `pass`, `drop`, `unsure` or `unavailable` (a failed call); NULL when not filtered |
 | exhausted_at       | TEXT    | v7: ISO-8601 UTC when the retry schedule ran out; NULL otherwise. An exhausted row keeps its state and plan, is never picked up again, and is made eligible by `retry` |
 | written_at         | TEXT    | v8 (#54): ISO-8601 UTC, set once in the `mark_written` transaction and never updated; NULL for rows written before v8 |
 | jo_key             | TEXT    | v6, reshaped in v9 (#93): `<Project page id>\|<jo_number_int>`, set at planning only when both resolve; NULL otherwise. JO Numbers are one counter per project, so the Department is not part of it |

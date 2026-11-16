@@ -389,6 +389,12 @@ MIGRATION_12 = [
     "ALTER TABLE messages ADD COLUMN jo_id TEXT",
 ]
 
+# The intake filter's verdict (#153): ``pass``, ``drop``, ``unsure`` or ``unavailable``; NULL
+# when the message was not filtered. Nullable, so the prior release still opens the ledger.
+MIGRATION_13 = [
+    "ALTER TABLE messages ADD COLUMN filter_verdict TEXT",
+]
+
 Migration = list[str] | Callable[[sqlite3.Connection], None]
 
 # Keyed by number and applied in ascending order of the numbers not yet recorded.
@@ -405,6 +411,7 @@ MIGRATIONS: dict[int, Migration] = {
     10: MIGRATION_10,
     11: MIGRATION_11,
     12: MIGRATION_12,
+    13: MIGRATION_13,
 }
 
 # Migrations that rebuild a referenced table run with foreign-key enforcement off.

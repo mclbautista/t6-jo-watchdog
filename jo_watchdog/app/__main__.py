@@ -29,6 +29,10 @@ container: ``docker compose exec watchdog python -m jo_watchdog.app backup /tmp/
 ``jo raise`` preview (never the confirm) and counts, per field, how the built value compares
 with what was written; it exits 1 when a ``--must-match`` field differs.
 
+``filter-report [--since DATE] [--until DATE]`` prints the counts of messages by intake filter
+verdict and extraction verdict (#153): counts only, so the owner can read ``drop`` against ``jo``
+before setting ``filter_drops: true``.
+
 ``healthcheck`` exits 0 when the poller's liveness stamp is fresh and 1
 otherwise; the container's ``HEALTHCHECK`` runs it.
 """
@@ -290,6 +294,27 @@ def run_compare_raise(config_path: str, last: int, must_match: tuple[str, ...]) 
     return asyncio.run(compare_raise(config_path, last, must_match))
 
 
+def run_filter_report(config_path: str, since: str | None, until: str | None) -> int:
+    """Counts by (filter verdict, extraction verdict) from a read-only copy of the ledger."""
+    config = load_config(config_path)
+    try:
+        ledger = Ledger.open_read_only(config.ledger_path)
+    except LedgerNotReady as exc:
+        print(f"filter-report: {exc}", file=sys.stderr)
+        return 2
+    try:
+        counts = ledger.filter_counts(since, until)
+    finally:
+        ledger.close()
+    span = f"{since or 'the start'} to {until or 'now'}"
+    print(f"filter verdict / extraction verdict, {span} (filter_drops: {config.filter_drops})")
+    for (filter_verdict, verdict), n in sorted(counts.items()):
+        print(f"{filter_verdict:>12} / {verdict:<8} {n:>6}")
+    if not counts:
+        print("no messages")
+    return 0
+
+
 def run_healthcheck(config_path: str) -> int:
     try:
         config = load_config(config_path)
@@ -439,6 +464,7 @@ def main(argv: list[str] | None = None) -> int:
             "backfill-gateway-refs",
             "backup",
             "compare-raise",
+            "filter-report",
         ],
         help="run the watchdog (default), check the poller's liveness, retry exhausted "
         "messages, reset the polling offset, backfill a missed intake message, "
@@ -486,6 +512,8 @@ def main(argv: list[str] | None = None) -> int:
         default=",".join(DEFAULT_MUST_MATCH),
         help="for compare-raise: comma list of fields whose difference gives exit 1",
     )
+    parser.add_argument("--since", help="for filter-report: first date (YYYY-MM-DD, UTC)")
+    parser.add_argument("--until", help="for filter-report: end date, not included")
     parser.add_argument("--config", default="config.yaml", help="path to config.yaml")
     args, extra = parser.parse_known_args(argv)
     # Group chat ids are negative, so a Telegram Key like ``-100123:42`` looks like
@@ -513,6 +541,14 @@ def main(argv: list[str] | None = None) -> int:
         if unknown or args.last < 1:
             parser.error(f"compare-raise: --last >= 1; --must-match from {', '.join(FIELDS)}")
         return run_compare_raise(args.config, args.last, must)
+    if args.command == "filter-report":
+        for value in (args.since, args.until):
+            if value is not None:
+                try:
+                    datetime.strptime(value, "%Y-%m-%d")
+                except ValueError:
+                    parser.error("filter-report dates are YYYY-MM-DD")
+        return run_filter_report(args.config, args.since, args.until)
     if args.command == "retry":
         return run_retry(args.config, args.telegram_key, args.all_exhausted)
     if args.command == "ingest":

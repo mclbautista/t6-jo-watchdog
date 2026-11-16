@@ -604,6 +604,35 @@ class Ledger:
                 self._log_ignored(row, "not_jo", now)
         return to_state
 
+    def record_filter_verdict(self, key: str, verdict: str) -> None:
+        """Store the intake filter's verdict beside the (later) extraction verdict."""
+        with self._transaction():
+            self._conn.execute(
+                "UPDATE messages SET filter_verdict = ? WHERE telegram_key = ?", (verdict, key)
+            )
+
+    def record_filtered(self, key: str) -> None:
+        """A ``drop`` with drops on: the message is ignored as ``filtered``; nothing is raised."""
+        now = _now()
+        with self._transaction():
+            row = self._move(key, State.RECEIVED, State.IGNORED, now)
+            self._log_ignored(row, "filtered", now)
+
+    def filter_counts(
+        self, since: str | None = None, until: str | None = None
+    ) -> dict[tuple[str, str], int]:
+        """Messages by (filter verdict, extraction verdict) for ``since <= created_at < until``.
+
+        A missing verdict is ``none``. Counts only: no text, ids or chats.
+        """
+        sql = (
+            "SELECT COALESCE(filter_verdict, 'none'), COALESCE(verdict, 'none'), COUNT(*)"
+            " FROM messages WHERE (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at < ?)"
+            " GROUP BY 1, 2"
+        )
+        rows = self._conn.execute(sql, (since, since, until, until))
+        return {(f, v): n for f, v, n in rows}
+
     def record_no_text(self, key: str) -> None:
         """A message with no text or caption skips the model and is ignored as ``no_text``."""
         now = _now()
