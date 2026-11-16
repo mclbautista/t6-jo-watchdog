@@ -179,6 +179,7 @@ class FakeJobOrders:
         self.down = False
         self.withhold_down: Exception | None = None  # raised by ``text withhold``
         self.withhold_calls: list[list[str]] = []
+        self.standing_cc_answer: str | None = None  # ``standing-cc``: a T6 ID or a page ID
         self.find_calls = 0
         self.create_calls = 0  # confirm attempts
         self.previews: list = []
@@ -230,6 +231,10 @@ class FakeJobOrders:
         self._jo_gate()
         self.previews.append(inputs)
         return RaisePreview(token=f"token-{len(self.previews)}", **self._rules(inputs))
+
+    async def standing_cc(self) -> str | None:
+        self._jo_gate()
+        return self.standing_cc_answer
 
     async def withhold_texts(self, texts: list[str]) -> list[str]:
         """``text withhold``: a stand-in that hides the value after ``password:``, in order."""

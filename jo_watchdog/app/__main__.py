@@ -54,6 +54,7 @@ from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from jo_watchdog.adapters.gateway import GatewayTelegramClient
+from jo_watchdog.adapters.t6api import T6ApiError
 from jo_watchdog.app import healthcheck
 from jo_watchdog.app.compare_raise import (
     DEFAULT_MUST_MATCH,
@@ -61,6 +62,7 @@ from jo_watchdog.app.compare_raise import (
     exit_code,
     render,
     run_comparison,
+    standing_cc_page_id,
 )
 from jo_watchdog.app.config import (
     gateway_secret,
@@ -280,7 +282,14 @@ async def compare_raise(config_path: str, last: int, must_match: tuple[str, ...]
         if not worker.caches.ready:
             print("compare-raise: the t6 API gave no people or projects", file=sys.stderr)
             return 2
-        report = await run_comparison(ledger, worker, last=last, must_match=must_match)
+        try:
+            standing_cc = await standing_cc_page_id(worker.job_orders, worker.caches.directory)
+        except T6ApiError as exc:
+            print(f"compare-raise: no standing cc from the t6 API ({type(exc).__name__})", file=sys.stderr)
+            return 2
+        report = await run_comparison(
+            ledger, worker, last=last, must_match=must_match, standing_cc=standing_cc
+        )
         print(render(report))
         return exit_code(report, must_match)
     finally:

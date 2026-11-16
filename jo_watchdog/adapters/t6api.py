@@ -36,6 +36,7 @@ from t6.verbs import (
     ProjectListInput,
     ProjectResolveInput,
     Refused,
+    StandingCcInput,
     TextWithholdInput,
 )
 
@@ -100,6 +101,10 @@ class T6Api:
     async def people(self) -> list[dict[str, Any]]:
         """``person list``: every Contact."""
         return (await self._call(self._client.person_list, PersonListInput()))["people"]
+
+    async def standing_cc(self) -> str | None:
+        """``standing-cc``: the T6 Person ID of the standing cc if bound, else its page ID."""
+        return (await self._call(self._client.standing_cc, StandingCcInput()))["standing_cc"]
 
     async def projects(self) -> list[dict[str, Any]]:
         """``project list``: every Project."""

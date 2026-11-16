@@ -22,6 +22,16 @@ from jo_watchdog.app.compare_raise import (
 from tests.test_worker_planning import KEY, Harness
 
 
+class Directory:
+    """``person list``: the standing cc's page has a T6 Person ID."""
+
+    async def people(self):
+        return [
+            {"page_id": "c-standing", "t6_id": "t6n_standing"},
+            {"page_id": "c-other", "t6_id": "t6n_other"},
+        ]
+
+
 async def written(test, **fields) -> Harness:
     """A harness whose one message was captured and written."""
     h = Harness(test, task="Cut", deadline_raw="Sep 30 end of shift", **fields)
@@ -75,6 +85,41 @@ class CompareTests(unittest.IsolatedAsyncioTestCase):
         text = render(report)
         self.assertIn(f"department row {row['id']}", text)
         self.assertNotIn("Cut", text)  # no posted text in the report
+
+    async def test_the_api_standing_cc_is_added_to_the_new_side(self):
+        h = await written(self)
+        plan = json.loads(h.ledger.get_message(KEY)["plan_json"])
+        plan["properties"]["cc"] = {"relation": [{"id": "c-ana"}, {"id": "c-standing"}]}
+        h.ledger._conn.execute(
+            "UPDATE messages SET plan_json = ? WHERE telegram_key = ?", (json.dumps(plan), KEY)
+        )
+        has = await run_comparison(
+            h.ledger, h.worker, last=50, must_match=("cc",), standing_cc="c-standing"
+        )
+        self.assertEqual(has.counts["cc"]["different"], 1)  # c-ana was never on the new side
+        plan["properties"]["cc"] = {"relation": [{"id": "c-standing"}]}
+        h.ledger._conn.execute(
+            "UPDATE messages SET plan_json = ? WHERE telegram_key = ?", (json.dumps(plan), KEY)
+        )
+        has = await run_comparison(
+            h.ledger, h.worker, last=50, must_match=("cc",), standing_cc="c-standing"
+        )
+        self.assertEqual(has.counts["cc"], {"same": 1, "different": 0, "missing": 0})
+        self.assertIn("standing cc on the API: yes", render(has))
+        self.assertNotIn("c-standing", render(has))
+        none = await run_comparison(h.ledger, h.worker, last=50, must_match=("cc",))
+        self.assertEqual(none.counts["cc"]["different"], 1)
+        self.assertEqual(exit_code(none, ("cc",)), 1)
+        self.assertIn("standing cc on the API: no", render(none))
+
+    async def test_a_t6_id_answer_is_turned_into_the_page_id_by_the_people_list(self):
+        from jo_watchdog.app.compare_raise import standing_cc_page_id
+
+        h = await written(self)
+
+        for answer, want in (("t6n_standing", "c-standing"), ("c-standing", "c-standing"), (None, None)):
+            h.notion.standing_cc_answer = answer
+            self.assertEqual(await standing_cc_page_id(h.notion, Directory()), want)
 
     async def test_only_the_must_match_kinds_decide_the_exit_code(self):
         h = await written(self)
@@ -144,9 +189,12 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         h.ledger._conn.execute("PRAGMA wal_checkpoint(FULL)")
         seen = {}
 
+        h.notion.standing_cc_answer = "c-standing"
+
         def build(config, ledger):
             seen["ledger"] = ledger
             h.worker.ledger = ledger
+            h.worker.caches.directory = Directory()
             return h.worker
 
         out = io.StringIO()
@@ -155,6 +203,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(code, 0)
         self.assertIn("compared 1 of 1", out.getvalue())
         self.assertIn("name", out.getvalue())
+        self.assertIn("standing cc on the API: yes", out.getvalue())
         self.assertNotEqual(seen["ledger"]._path, h.ledger._path)  # a private copy, read only
         with self.assertRaises(Exception):
             seen["ledger"]._conn.execute("DELETE FROM messages")
