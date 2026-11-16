@@ -15,6 +15,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from t6.verbs import JoRaiseInput, JoRaiseMessage
@@ -61,8 +62,11 @@ from jo_watchdog.core.payload import (
 from jo_watchdog.core.plan import first_line_of, header_line_of
 from jo_watchdog.core.provenance import parse_forward_origin, source_block
 from jo_watchdog.core.report import (
+    NOT_MESSAGE_TEXT,
+    dry_run_values,
     forward_origin_from_raw,
     intake_link,
+    map_strings,
     render_capture_report,
     render_dry_run_plan,
     render_edit_after_capture,
@@ -517,6 +521,17 @@ class Worker:
                 return
             dup_key = self._annotate_duplicate(msg, plan)
             match = await self._match(msg, plan)
+            dry_run_text = None
+            if self.config.dry_run:
+                # The plan is shown only withheld: without the API there is no plan to post, so
+                # the row stays `extracted` and nothing is stored (as when planning cannot ask).
+                try:
+                    dry_run_text = await self._dry_run_text(msg, plan)
+                except ApiUnreachable as exc:
+                    log.warning("t6 API unreachable for %s; holding: %s", key, type(exc).__name__)
+                    return
+                except Exception as exc:
+                    raise StepFailure(PLANNING, exc) from exc
             # State, plan and match records commit together: a crash cannot leave
             # `planned` empty, and a resumed plan never repeats the Jev call.
             if not self.ledger.plan_message(
@@ -527,8 +542,8 @@ class Worker:
                 llm_calls=[c.model_dump() for c in match.llm_calls] if match else None,
             ):
                 return
-            if self.config.dry_run:
-                self._report_dry_run(msg, plan)
+            if dry_run_text is not None:
+                self._report_dry_run(msg, dry_run_text)
                 return
 
         # Move to `writing` before the create call (closes the crash window).
@@ -805,7 +820,10 @@ class Worker:
         facts = self._capture_facts(msg, plan, mismatches)
         facts.duplicate_key_urls = reconcile.get("duplicate_urls", [])
         findings = verify(facts, header_date_tolerance_days=self.config.header_date_tolerance_days)
-        reports = self._capture_reports(msg, plan, page_ref.url, findings)
+        try:
+            reports = await self._capture_reports(msg, plan, page_ref.url, findings)
+        except Exception as exc:  # the report must not show unwithheld text: retry the step
+            raise StepFailure(NOTION_READ_BACK, exc) from exc
         if self.ledger.has_pending_edits(key):
             # Edited while still in the pipeline: the row holds the original
             # text, and the edit is reported once, now that it is captured.
@@ -850,14 +868,35 @@ class Worker:
                 self.ledger.set_reaction_state(key, "failed")
         self.ledger.mark_done(key)
 
-    def _report_dry_run(self, msg: dict, plan: JobOrderPlan) -> None:
-        """Dry-run stops at `planned`: post the masked plan to ops, write nothing."""
-        text = render_dry_run_plan(
-            plan=plan.model_dump(mode="json"),
+    async def _withheld(self, value: Any, skip: frozenset[str] = frozenset()) -> Any:
+        """``value`` with every string in it sent through ``text withhold``, in one call."""
+        texts: list[str] = []
+
+        def collect(text: str) -> str:
+            texts.append(text)
+            return text
+
+        map_strings(value, collect, skip)
+        if not texts:
+            return value
+        answers = iter(await self.job_orders.withhold_texts(texts))
+        return map_strings(value, lambda _text: next(answers), skip)
+
+    async def _dry_run_text(self, msg: dict, plan: JobOrderPlan) -> str:
+        """The dry-run plan as ops shows it: the Name and every value, withheld."""
+        values = dry_run_values(plan.model_dump(mode="json"))
+        shown = await self._withheld({"name": plan.name, "values": [v for _, v in values]})
+        return render_dry_run_plan(
+            name=shown["name"],
+            values=[(label, v) for (label, _), v in zip(values, shown["values"], strict=True)],
+            body_blocks=len(plan.body_blocks),
             intake_url=intake_link(
                 msg["chat_id"], self.config.intake_topic_id, msg["message_id"]
             ),
         )
+
+    def _report_dry_run(self, msg: dict, text: str) -> None:
+        """Dry-run stops at `planned`: post the withheld plan to ops, write nothing."""
         self.ledger.enqueue_system(
             OutboxMessage(
                 kind="dry_run_plan",
@@ -977,12 +1016,20 @@ class Worker:
             ],
         )
 
-    def _capture_reports(
+    async def _capture_reports(
         self, msg: dict, plan, page_url: str, findings: list[Finding]
     ) -> list[OutboxMessage]:
         origin = forward_origin_from_raw(_raw_update(msg))
+        name = plan.name
+        if findings:  # a capture with no finding posts no report, so there is nothing to withhold
+            shown = await self._withheld(
+                {"name": name, "findings": [f.model_dump() for f in findings]},
+                skip=NOT_MESSAGE_TEXT | {"code"},
+            )
+            name = shown["name"]
+            findings = [Finding(**f) for f in shown["findings"]]
         text = render_capture_report(
-            name=plan.name,
+            name=name,
             findings=findings,
             page_url=page_url,
             intake_url=intake_link(msg["chat_id"], self.config.intake_topic_id, msg["message_id"]),

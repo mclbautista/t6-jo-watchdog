@@ -4,6 +4,9 @@ Messages are rendered as Telegram HTML (``parse_mode="HTML"``): the wording is
 exactly the #23 templates, with ``[text](URL)`` written as ``<a href>`` and
 backticks as ``<code>``, so only ``& < >`` ever need escaping.
 
+Text from the message is withheld by the caller (``text withhold``) before it reaches a
+renderer here; the renderers only flatten and escape it.
+
 Source-derived fields are flattened to one line and escaped; free text of the
 Job Order (its notes, task and the like) is reported as a character count, never
 as text. The full raw message is never part of a report.
@@ -12,6 +15,7 @@ as text. The full raw message is never part of a report.
 from __future__ import annotations
 
 import html
+from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any
 
@@ -248,13 +252,15 @@ def _plain_property(prop: dict) -> str:
     return str(prop)
 
 
-def render_dry_run_plan(*, plan: dict, intake_url: str) -> str:
-    """The stored plan, one line per planned property (#27).
+def dry_run_values(plan: dict) -> list[tuple[str, Any]]:
+    """What the dry-run plan shows: a label and a value for each planned property (#27).
 
     The Job Order's free text is reported as a character count; its other values (the API's
-    Name, number, Department, deadline, and the relations) are shown.
+    number, Department, deadline, the relations, and every other non-empty key of the plan)
+    are shown. A value may hold text from the message, so it goes through ``text withhold``
+    before ``render_dry_run_plan``.
     """
-    lines = [DRY_RUN_HEADER, f"<code>{_field(plan.get('name', ''))}</code>", ""]
+    shown: list[tuple[str, Any]] = []
     for key, value in plan.items():
         if key in ("name", "telegram_key", "body_blocks") or value in (None, "", [], {}):
             continue
@@ -264,12 +270,39 @@ def render_dry_run_plan(*, plan: dict, intake_url: str) -> str:
                 if "rich_text" in raw and prop != "JO Number":
                     text = f"{len(text)} characters" if text else ""
                 if prop not in ("Name", "Telegram Key") and text:
-                    lines.append(f"{_field(prop)}: {_field(text)}")
+                    shown.append((prop, text))
             continue
-        lines.append(f"{_field(key)}: {_field(value)}")
-    lines.append(f"Body: {len(plan.get('body_blocks') or [])} block(s)")
+        shown.append((key, value))
+    return shown
+
+
+def render_dry_run_plan(
+    *, name: str, values: list[tuple[str, Any]], body_blocks: int, intake_url: str
+) -> str:
+    """The dry-run plan, one line per value of ``dry_run_values`` (already withheld)."""
+    lines = [DRY_RUN_HEADER, f"<code>{_field(name)}</code>", ""]
+    lines += [f"{_field(label)}: {_field(value)}" for label, value in values]
+    lines.append(f"Body: {body_blocks} block(s)")
     lines += ["", _link("Telegram message", intake_url)]
     return "\n".join(lines)
+
+
+def map_strings(value: Any, fn: Callable[[str], str], skip: frozenset[str] = frozenset()) -> Any:
+    """``value`` with ``fn`` applied to every string in it, in a fixed order.
+
+    Dicts and lists are copied; a dict value under a key in ``skip`` is left as it is.
+    """
+    if isinstance(value, str):
+        return fn(value)
+    if isinstance(value, dict):
+        return {k: v if k in skip else map_strings(v, fn, skip) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [map_strings(v, fn, skip) for v in value]
+    return value
+
+
+# Finding params that are not text from the message: links, the origin kind, a role, a date.
+NOT_MESSAGE_TEXT = frozenset({"url", "urls", "origin", "role", "posted", "properties"})
 
 
 def render_outage_alert(

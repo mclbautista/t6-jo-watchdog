@@ -163,6 +163,10 @@ class ScriptedNotion:
     async def find_job_orders(self, chat_id: int, message_id: int):
         return []
 
+    async def withhold_texts(self, texts: list[str]) -> list[str]:
+        """``text withhold``: the scenarios post no credentials, so the texts come back as sent."""
+        return list(texts)
+
     async def find_contacts(self, mentions: list[str]) -> list[ContactMatch]:
         """The ``person find`` answer: nobody is known to the scenarios."""
         return [ContactMatch(status="unresolved") for _ in mentions]

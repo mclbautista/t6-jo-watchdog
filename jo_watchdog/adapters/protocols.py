@@ -125,6 +125,10 @@ class JobOrderApi(Protocol):
         """The Job Order on a page: ``name``, ``telegram_key``, ``date``, ``deadline``."""
         ...
 
+    async def withhold_texts(self, texts: list[str]) -> list[str]:
+        """``text withhold``: the texts in order, labelled credentials replaced."""
+        ...
+
 
 @runtime_checkable
 class DirectoryReader(Protocol):

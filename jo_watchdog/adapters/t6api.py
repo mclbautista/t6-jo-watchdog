@@ -36,6 +36,7 @@ from t6.verbs import (
     ProjectListInput,
     ProjectResolveInput,
     Refused,
+    TextWithholdInput,
 )
 
 from jo_watchdog.adapters.protocols import PageRef
@@ -47,6 +48,8 @@ from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
 CALL_TIMEOUT_SECONDS = 30.0
 # ``person find`` takes at most this many mentions in one call.
 MAX_MENTIONS = 50
+# ``text withhold`` takes at most this many texts in one call.
+MAX_WITHHOLD = 200
 # A masked read names a page "[kind N]"; a bracketed token is never a real Deliverable name.
 _PLACEHOLDER = re.compile(r"\[[^\]]*\d+\]")
 
@@ -153,6 +156,23 @@ class T6Api:
                 )
             candidates.append(Candidate(page_id=item["page_id"], name=name))
         return candidates
+
+    async def withhold_texts(self, texts: list[str]) -> list[str]:
+        """``text withhold``: the same texts, in order, with labelled credentials replaced.
+
+        Needed before message text is shown outside the intake chat. More than ``MAX_WITHHOLD``
+        texts go in as consecutive calls of that size.
+        """
+        out: list[str] = []
+        for start in range(0, len(texts), MAX_WITHHOLD):
+            batch = texts[start : start + MAX_WITHHOLD]
+            result = await self._call(
+                self._client.text_withhold, TextWithholdInput(texts=batch)
+            )
+            if len(result["texts"]) != len(batch):
+                raise T6ApiError(f"text withhold answered {len(result['texts'])} for {len(batch)}")
+            out.extend(result["texts"])
+        return out
 
     # -- Job Orders (raise, recovery and read-back) ------------------------------------
 

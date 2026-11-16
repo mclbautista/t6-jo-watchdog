@@ -177,6 +177,8 @@ class FakeJobOrders:
         self.page_delay = page_delay
         self.lost_confirms = lost_confirms
         self.down = False
+        self.withhold_down: Exception | None = None  # raised by ``text withhold``
+        self.withhold_calls: list[list[str]] = []
         self.find_calls = 0
         self.create_calls = 0  # confirm attempts
         self.previews: list = []
@@ -228,6 +230,13 @@ class FakeJobOrders:
         self._jo_gate()
         self.previews.append(inputs)
         return RaisePreview(token=f"token-{len(self.previews)}", **self._rules(inputs))
+
+    async def withhold_texts(self, texts: list[str]) -> list[str]:
+        """``text withhold``: a stand-in that hides the value after ``password:``, in order."""
+        self.withhold_calls.append(list(texts))
+        if self.withhold_down:
+            raise self.withhold_down
+        return [re.sub(r"(?i)(password:\s*)\S+", r"\1[withheld]", text) for text in texts]
 
     async def confirm_job_order(self, inputs, token: str) -> str:
         self._jo_gate()
