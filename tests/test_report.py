@@ -28,6 +28,9 @@ TABLE = [
      'cc "Bea" didn\'t match a contact'),
     (Finding(code="ambiguous_person", params={"role": "assignee", "raw": "Ramon"}),
      'Assignee "Ramon" matches more than one contact'),
+    (Finding(code="assignee_no_person_id", params={"raw": "Lena", "contact": "Lena Cruz"}),
+     'Assignee "Lena" (Lena Cruz) has no T6 Person ID: left out of the Job Order\'s assignees,'
+     " and an End of Shift deadline ignores them"),
     (Finding(code="unresolved_project", params={"raw": "PP2 APC"}),
      'Project mention "PP2 APC" didn\'t match any known Project Code'),
     (Finding(code="unknown_department", params={"token": "XYZ"}),

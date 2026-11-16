@@ -84,7 +84,7 @@ def main():
         after = snapshot(conn)
         assert conn.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
         assert not conn.execute('PRAGMA foreign_key_check').fetchall()
-    assert max(r['version'] for r in after['schema_version']) == 13
+    assert max(r['version'] for r in after['schema_version']) == 14
     for table in before:
         if table == 'messages':  # migrations 12 and 13 add the nullable jo_id and filter_verdict
             assert after[table] == [{**r, 'jo_id': None, 'filter_verdict': None} for r in before[table]]

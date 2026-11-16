@@ -44,9 +44,9 @@ keys before commit, so tables that reference `messages(id)` stay valid.
 | reaction_state     | TEXT    | v5: capture reaction (👍, or 🤔 when findings were stored), `pending` \| `set` \| `failed` |
 | created_at         | TEXT    | ISO-8601 UTC                                       |
 | updated_at         | TEXT    | ISO-8601 UTC                                       |
-| masked_text        | TEXT    | no longer written; NULL on rows made since #143 (v2) |
-| masker_version     | TEXT    | no longer written (v2)                             |
-| masked_count       | INTEGER | no longer written (v2)                             |
+| masked_text        | TEXT    | no longer used; `''` on rows made since #143, so the previous image does not backfill them (v2) |
+| masker_version     | TEXT    | no longer used; `t6-api` on new rows (v2)          |
+| masked_count       | INTEGER | no longer used; `0` on new rows (v2)               |
 | posted_at          | TEXT    | Telegram message date, ISO-8601 with `+08:00` (v3; backfilled from `raw_source`) |
 | attempts           | INTEGER | NOT NULL DEFAULT 0; failed attempts at the current stage, reset on every successful state change (v3) |
 | next_attempt_at    | TEXT    | ISO-8601 UTC; when a failed stage may run again (v3) |
@@ -273,7 +273,7 @@ retry delay.
 
 Version 2 adds `masked_text`, `masker_version`, and `masked_count`. The watchdog no longer
 masks anything (the t6 API masks what it sends a model and withholds credentials from what it
-writes), so a row made since then leaves them NULL and an old ledger is not backfilled.
+writes), so a row made since then holds `''`, `t6-api` and `0`: a NULL in any of them makes the previous image rewrite the row's stored plan, so they are never NULL. An old ledger is not backfilled.
 Version 3 adds `extracted` (validated DeepSeek output)
 and `ignored` (`not_jo` and `no_text`). A failed classify call leaves the row in
 `received` with `attempts` incremented and `next_attempt_at` set; there is no

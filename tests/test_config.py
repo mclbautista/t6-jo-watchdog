@@ -169,6 +169,39 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertEqual(placeholder_keys(live()), [])
 
 
+class RemovedKeyTests(unittest.TestCase):
+    OLD_EXAMPLE = ROOT / "tests" / "fixtures" / "config.origin-main.yaml"
+
+    def test_the_config_example_before_stage_2_still_loads_and_names_each_removed_key(self):
+        with self.assertLogs("jo_watchdog", level="WARNING") as logs:
+            config = load_config(self.OLD_EXAMPLE)
+        text = "\n".join(logs.output)
+        for key in ("job_orders_data_source_id", "notion_version", "deepseek_model", "jev_url",
+                    "fuzzy_min_score", "honorifics"):
+            self.assertIn(key, text)
+        self.assertEqual(len(logs.records), 1)  # one line for all the removed keys
+        self.assertEqual(config.intake_topic_id, 2)
+
+    def test_the_warning_holds_key_names_never_values(self):
+        data = yaml.safe_load(self.OLD_EXAMPLE.read_text(encoding="utf-8"))
+        data["jev_url"] = "https://secret.invalid/path"
+        path = Path(tempfile.mkdtemp()) / "c.yaml"
+        self.addCleanup(path.unlink)
+        path.write_text(yaml.safe_dump(data))
+        with self.assertLogs("jo_watchdog", level="WARNING") as logs:
+            load_config(path)
+        self.assertNotIn("secret.invalid", "\n".join(logs.output))
+
+    def test_a_key_that_was_never_a_config_key_is_still_refused(self):
+        data = yaml.safe_load(self.OLD_EXAMPLE.read_text(encoding="utf-8"))
+        data["never_a_key"] = 1
+        path = Path(tempfile.mkdtemp()) / "c.yaml"
+        self.addCleanup(path.unlink)
+        path.write_text(yaml.safe_dump(data))
+        with self.assertRaises(ValidationError):
+            load_config(path)
+
+
 class ExampleFilesTests(unittest.TestCase):
     def test_config_example_lists_every_key_and_boots(self):
         data = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))

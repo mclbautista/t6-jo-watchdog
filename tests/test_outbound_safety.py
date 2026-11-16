@@ -52,9 +52,10 @@ class CaptureSafetyTests(unittest.IsolatedAsyncioTestCase):
         message = ledger.get_message("-100123:42")
         assert message is not None
         self.assertEqual(message["text"], SOURCE)
-        # The watchdog keeps no masked copy of its own.
-        self.assertIsNone(message["masked_text"])
-        self.assertIsNone(message["masked_count"])
+        # The watchdog keeps no masked copy of its own: the columns hold the values that make
+        # the previous image leave the row alone on a rollback, and no text.
+        self.assertEqual(message["masked_text"], "")
+        self.assertEqual(message["masked_count"], 0)
 
         # The text goes to the API as posted: the API withholds the credential on its write.
         [raised] = notion.confirms

@@ -86,7 +86,7 @@ class OutcomeMappingTests(unittest.IsolatedAsyncioTestCase):
     async def test_unavailable_refused_api_error_and_ambiguous_raise_one_error(self):
         for answer, text in (
             (Unavailable("connection refused"), "unavailable: connection refused"),
-            (Refused(rule="permission", reason="no grant"), "refused (permission): no grant"),
+            (Refused(rule="permission", reason="no grant"), "refused (permission)"),
             (APIError("API returned HTTP 502", 502), "HTTP 502"),
             (Ambiguous(candidates=["a", "b"]), "ambiguous"),
         ):

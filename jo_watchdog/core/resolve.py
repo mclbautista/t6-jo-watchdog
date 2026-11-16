@@ -356,8 +356,16 @@ def people_resolution(
         if result.status != "resolved" or result.page_id is None:
             continue
         _add_unique(out.assigned if result.role == "assignee" else out.cc, result.page_id)
-        if result.role == "assignee" and result.t6_id:
-            _add_unique(out.assignee_ids, result.t6_id)
+        if result.role == "assignee":
+            if result.t6_id:
+                _add_unique(out.assignee_ids, result.t6_id)
+            else:  # not sent to ``jo raise``: an end-of-shift deadline ignores this person
+                out.findings.append(
+                    Finding(
+                        code="assignee_no_person_id",
+                        params={"raw": result.raw, "contact": result.contact_name or ""},
+                    )
+                )
 
     if settings.standing_cc_contact_page_id:
         _add_unique(out.cc, settings.standing_cc_contact_page_id)

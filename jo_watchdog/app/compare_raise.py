@@ -93,7 +93,12 @@ async def run_comparison(ledger, worker, *, last: int, must_match: tuple[str, ..
     for row in ledger.written_messages(last):
         report.rows += 1
         stored_plan = json.loads(row["plan_json"]) if row["plan_json"] else None
-        built_plan = await worker.build_plan(row) if stored_plan else None
+        built_plan = None
+        if stored_plan:
+            try:
+                built_plan = await worker.build_plan(row)
+            except Exception:  # a refused preview is a row the new path cannot build
+                built_plan = None
         if stored_plan is None or built_plan is None:
             report.not_built += built_plan is None and stored_plan is not None
             for name in FIELDS:

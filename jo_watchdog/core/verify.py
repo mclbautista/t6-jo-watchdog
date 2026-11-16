@@ -26,6 +26,7 @@ FINDING_ORDER = [
     "multiple_jo",
     "unresolved_person",
     "ambiguous_person",
+    "assignee_no_person_id",
     "unresolved_project",
     "unknown_department",
     "fuzzy_person",

@@ -395,6 +395,14 @@ MIGRATION_13 = [
     "ALTER TABLE messages ADD COLUMN filter_verdict TEXT",
 ]
 
+# The duplicate key is the API's (#134): ``<undashed lower-case page id>|<number>``. Keys the
+# old watchdog stored hold the dashed id, so rewrite them: repost and number-reuse detection
+# compares by equality.
+MIGRATION_14 = [
+    "UPDATE messages SET jo_key = lower(replace(jo_key, '-', '')) "
+    " WHERE jo_key GLOB '????????-????-????-????-????????????|*'",
+]
+
 Migration = list[str] | Callable[[sqlite3.Connection], None]
 
 # Keyed by number and applied in ascending order of the numbers not yet recorded.
@@ -412,6 +420,7 @@ MIGRATIONS: dict[int, Migration] = {
     11: MIGRATION_11,
     12: MIGRATION_12,
     13: MIGRATION_13,
+    14: MIGRATION_14,
 }
 
 # Migrations that rebuild a referenced table run with foreign-key enforcement off.

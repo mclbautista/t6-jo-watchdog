@@ -28,7 +28,7 @@ from jo_watchdog.adapters.protocols import (
     PageRef,
     TelegramClient,
 )
-from jo_watchdog.adapters.t6api import KeyAlreadyHeld, T6ApiError, raise_input
+from jo_watchdog.adapters.t6api import ApiUnreachable, KeyAlreadyHeld, raise_input
 from jo_watchdog.app.caches import CacheManager
 from jo_watchdog.app.config import Config
 from jo_watchdog.app.matching import (
@@ -73,6 +73,7 @@ from jo_watchdog.core.report import (
     render_stale_cache,
 )
 from jo_watchdog.core.resolve import mention_entities
+from jo_watchdog.core.safe_error import describe
 from jo_watchdog.core.verify import (
     MANILA,
     CaptureFacts,
@@ -99,6 +100,7 @@ CLASSIFICATION = "Classification"
 NOTION_WRITE = "Notion write"
 NOTION_READ_BACK = "Notion read-back"
 NOTION_RECONCILIATION = "Notion reconciliation"
+PLANNING = "Planning"
 # How long the page of a raised Job Order is waited for between polls of ``jo get``.
 RAISE_POLL_INTERVAL = 2.0
 _TRACE_FIELDS = (
@@ -466,7 +468,7 @@ class Worker:
             return
         result = self.ledger.record_failure(
             key,
-            error=f"{type(failure.cause).__name__}: {failure.cause}",
+            error=describe(failure.cause),
             schedule=self.config.retry_schedule_seconds,
             now=self.clock(),
             retry_after=getattr(failure.cause, "retry_after", None),
@@ -563,9 +565,11 @@ class Worker:
                     extraction.assignees_raw, extraction.cc_raw, mention_entities(message)
                 )
                 project = await caches.resolve_project(header_text, extraction.project_raw)
-            except T6ApiError as exc:
-                log.warning("t6 API cannot match %s yet; holding: %s", key, exc)
+            except ApiUnreachable as exc:
+                log.warning("t6 API unreachable for %s; holding: %s", key, type(exc).__name__)
                 return None
+            except Exception as exc:  # a refusal or error is a failure: retries, then the alert
+                raise StepFailure(PLANNING, exc) from exc
         raise_message = JoRaiseMessage(
             header_text=header_text,
             deadline_text=extraction.deadline_raw or "",
@@ -585,9 +589,11 @@ class Worker:
                     idempotency_key=idempotency_key(key),
                 )
             )
-        except T6ApiError as exc:
-            log.warning("t6 API cannot preview %s yet; holding: %s", key, exc)
+        except ApiUnreachable as exc:
+            log.warning("t6 API unreachable for %s; holding: %s", key, type(exc).__name__)
             return None
+        except Exception as exc:  # a refusal or error is a failure: retries, then the alert
+            raise StepFailure(PLANNING, exc) from exc
 
         plan = plan_job_order(
             extraction,
@@ -670,7 +676,7 @@ class Worker:
             # Raised by an earlier attempt whose answer was lost: find it.
             found = await self._find(msg)
             if not found:
-                raise
+                raise StepFailure(NOTION_WRITE, KeyAlreadyHeld("held key, no Job Order found"))
             await self._adopt(msg, plan, found)
             return
         except Exception as exc:

@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from t6.verbs import Done, Refused
 
 from jo_watchdog.adapters.protocols import ClassifyResult, IncomingUpdate, PageRef
-from jo_watchdog.adapters.t6api import T6ApiError
+from jo_watchdog.adapters.t6api import ApiUnreachable, T6ApiError
 from jo_watchdog.app.caches import person_from_page, project_from_page
 from jo_watchdog.core.extraction import EXTRACTED_FIELDS, PROMPT_TAG, Extraction
 from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
@@ -189,7 +189,7 @@ class FakeJobOrders:
 
     def _jo_gate(self) -> None:
         if self.down:
-            raise T6ApiError("t6 API unavailable: connection refused")
+            raise ApiUnreachable("t6 API unavailable: connection refused")
 
     def _rules(self, inputs) -> dict:
         message = inputs.message
@@ -363,7 +363,7 @@ class RecordedDirectory:
     def _enter(self, name: str) -> None:
         self.calls.append(name)
         if self.fail:
-            raise T6ApiError("t6 API unavailable: 503 down")
+            raise ApiUnreachable("t6 API unavailable: 503 down")
 
     async def people(self) -> list[dict]:
         self._enter("people")
@@ -434,7 +434,7 @@ class FakeMatcher:
     async def find_project(self, text: str) -> ProjectMatch:
         self.project_calls.append(text)
         if self.down:
-            raise T6ApiError("t6 API unavailable: connection refused")
+            raise ApiUnreachable("t6 API unavailable: connection refused")
         folded = text.casefold()
         if folded in self.projects:
             return self.projects[folded]
@@ -444,7 +444,7 @@ class FakeMatcher:
     async def find_contacts(self, mentions: list[str]) -> list[ContactMatch]:
         self.calls.append(list(mentions))
         if self.down:
-            raise T6ApiError("t6 API unavailable: connection refused")
+            raise ApiUnreachable("t6 API unavailable: connection refused")
         return [
             self.contacts.get(m.casefold(), ContactMatch(status="unresolved")) for m in mentions
         ]

@@ -135,3 +135,21 @@ class FailureTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ErrorTextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_refusal_and_an_api_error_keep_no_provider_text(self):
+        from t6.client import APIError
+        from t6.verbs import Refused
+
+        from jo_watchdog.adapters.t6decide import MatcherError, T6DecideMatcher
+        from tests.fakes import FakeDecideClient
+
+        for answer in (
+            Refused(rule="provider", reason="echo: SECRET", failure="api_error"),
+            APIError("HTTP 400: SECRET", 400),
+        ):
+            matcher = T6DecideMatcher(FakeDecideClient(answer))
+            with self.assertRaises(MatcherError) as caught:
+                await matcher.match("state", "proj", [])
+            self.assertNotIn("SECRET", str(caught.exception))

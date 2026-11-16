@@ -11,6 +11,7 @@ them mandatory when the service boots.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import warnings
@@ -279,6 +280,28 @@ _RENAMED_KEYS = {
 }
 
 
+# Keys of earlier releases that no longer do anything (the t6 API holds those rules and keys).
+# An old config.yaml still loads: each is dropped and named in one warning, never its value.
+REMOVED_KEYS = frozenset(
+    {
+        "job_orders_data_source_id",
+        "contacts_data_source_id",
+        "projects_data_source_id",
+        "deliverables_data_source_id",
+        "notion_version",
+        "deepseek_base_url",
+        "deepseek_model",
+        "deepseek_timeout_seconds",
+        "jev_url",
+        "jev_model",
+        "jev_timeout_seconds",
+        "fuzzy_min_score",
+        "fuzzy_min_lead",
+        "honorifics",
+    }
+)
+
+
 def _apply_renamed_keys(data: dict) -> dict:
     for old, new in _RENAMED_KEYS.items():
         if old in data:
@@ -296,6 +319,13 @@ def load_config(path: str | Path) -> Config:
     """Load non-secret config from a YAML file."""
     with open(path, encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
+    removed = sorted(REMOVED_KEYS & data.keys())
+    if removed:
+        for key in removed:
+            del data[key]
+        logging.getLogger("jo_watchdog").warning(
+            "config keys ignored (removed): %s", ", ".join(removed)
+        )
     return Config(**_apply_renamed_keys(data))
 
 

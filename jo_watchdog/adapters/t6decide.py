@@ -95,7 +95,7 @@ class T6DecideMatcher:
         except TimeoutError as exc:
             raise MatcherError("timeout", "no answer from the t6 API in time") from exc
         except APIError as exc:
-            raise MatcherError("api_error", str(exc)[:500]) from exc
+            raise MatcherError("api_error", f"API error: HTTP {exc.status}") from exc
 
         if isinstance(outcome, Unavailable):
             failure = "timeout" if "timed out" in outcome.reason else "transport"
@@ -103,7 +103,7 @@ class T6DecideMatcher:
         if isinstance(outcome, Refused):
             raise MatcherError(
                 outcome.failure or outcome.rule,
-                f"refused ({outcome.rule}): {outcome.reason}"[:500],
+                f"refused ({outcome.rule})",
                 retry_after=_capped(outcome.retry_after),
             )
         if not isinstance(outcome, Done):

@@ -184,3 +184,35 @@ class ThreadingTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ErrorTextTests(unittest.IsolatedAsyncioTestCase):
+    """What is stored or alerted holds no message text and no model output."""
+
+    async def test_a_schema_violation_keeps_the_error_count_and_field_paths_only(self):
+        from t6.verbs import Done
+
+        answer = Done(
+            outcome="done",
+            result={
+                "output": {"verdict": "SECRET message text", "confidence": "high"},
+                "output_valid": True,
+                "model": "m",
+                "tokens": {},
+            },
+        )
+        classifier, _ = classifier_for(answer)
+        result = await classifier.classify("x", None)
+        self.assertEqual(result.outcome, "schema_violation")
+        self.assertNotIn("SECRET", result.error)
+        self.assertIn("ValidationError", result.error)
+        self.assertIn("verdict", result.error)
+
+    async def test_a_refusal_and_an_api_error_keep_no_provider_text(self):
+        for answer in (
+            Refused(rule="provider", reason="echo: SECRET text", failure="api_error"),
+            APIError("HTTP 400: SECRET text", 400),
+        ):
+            classifier, _ = classifier_for(answer)
+            result = await classifier.classify("x", None)
+            self.assertNotIn("SECRET", result.error)

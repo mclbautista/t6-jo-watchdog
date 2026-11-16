@@ -220,9 +220,13 @@ class FailureTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([f.code for f in result.findings], ["matcher_skipped"])
 
-    async def test_failure_error_text_is_the_failure_cut_to_500_characters(self):
-        result = await stage(FakeMatcher(RuntimeError("x" * 900), RuntimeError("y")))
-        self.assertEqual(result.llm_calls[0].error, "x" * 500)
+    async def test_a_matcher_failure_is_cut_to_500_characters_and_other_errors_keep_the_class(self):
+        from jo_watchdog.adapters.t6decide import MatcherError
+
+        result = await stage(FakeMatcher(MatcherError("timeout", "x" * 900), RuntimeError("y")))
+        self.assertEqual(len(result.llm_calls[0].error), 500)
+        result = await stage(FakeMatcher(RuntimeError("SECRET text"), RuntimeError("y")))
+        self.assertEqual(result.llm_calls[0].error, "RuntimeError")
 
 
 class StorageTests(unittest.IsolatedAsyncioTestCase):

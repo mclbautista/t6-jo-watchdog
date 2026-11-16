@@ -312,3 +312,21 @@ class Migration3Tests(unittest.TestCase):
         names = {r[0] for r in ledger._conn.execute("SELECT name FROM sqlite_master")}
         self.assertIn("messages_state", names)
         self.assertNotIn("messages_new", names)
+
+
+class RollbackSafetyTests(unittest.TestCase):
+    def test_new_rows_hold_the_mask_columns_the_previous_image_leaves_alone(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Ledger(Path(tmp) / "ledger.db")
+            self.addCleanup(ledger.close)
+            ledger.ingest_message(-1, 5, "{}", "Task: x", "Task: x", posted_at=None)
+            ledger.accept_message(-1, 6, 1, "{}", "Task: y", "Task: y", posted_at=None)
+            rows = ledger._conn.execute(
+                "SELECT masked_text, masker_version, masked_count FROM messages"
+            ).fetchall()
+            self.assertTrue(rows)
+            for row in rows:  # the previous image backfills rows where any of them is NULL
+                self.assertEqual(tuple(row), ("", "t6-api", 0))

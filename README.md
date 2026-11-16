@@ -224,6 +224,12 @@ JO_WATCHDOG_TAG=previous docker compose up -d --no-build
 Ledger migrations are forward-only and stay backward-compatible for one
 release, so the previous image can read a ledger the current one migrated.
 
+Before a rollback, wait until no row is `received`, `extracted`, `planned` or `writing`
+(`SELECT COUNT(*) FROM messages WHERE state IN ('received','extracted','planned','writing')`
+is 0). The previous image reads the model input and the page's source text from
+`masked_text`, which the current image leaves empty, so a row in flight at the switch would
+be classified or written without its text. Restore `.env` and `config.yaml` from backup too.
+
 ### Gateway mode (Sixto gateway)
 
 With `telegram_mode: gateway` the watchdog no longer holds the bot token. The

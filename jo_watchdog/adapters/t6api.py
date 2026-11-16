@@ -55,6 +55,10 @@ class T6ApiError(Exception):
     """A t6 API call failed: transport down, refused, an HTTP error, or no answer in time."""
 
 
+class ApiUnreachable(T6ApiError):
+    """No answer: the transport is down or the call timed out. The only error that may wait."""
+
+
 class KeyAlreadyHeld(T6ApiError):
     """``jo raise`` refused: a Job Order with this Telegram Key was already raised."""
 
@@ -74,15 +78,15 @@ class T6Api:
                 asyncio.to_thread(method, inputs), timeout=self._call_timeout
             )
         except TimeoutError as exc:
-            raise T6ApiError(f"t6 API gave no answer in {self._call_timeout:g} s") from exc
+            raise ApiUnreachable(f"t6 API gave no answer in {self._call_timeout:g} s") from exc
         except APIError as exc:
-            raise T6ApiError(f"t6 API error: {exc}") from exc
+            raise T6ApiError(f"t6 API error: HTTP {exc.status}") from exc
         if isinstance(outcome, Unavailable):
-            raise T6ApiError(f"t6 API unavailable: {outcome.reason}")
+            raise ApiUnreachable(f"t6 API unavailable: {outcome.reason}")
         if isinstance(outcome, Refused):
             if outcome.rule == "telegram_key":
-                raise KeyAlreadyHeld(f"t6 API refused ({outcome.rule}): {outcome.reason}")
-            raise T6ApiError(f"t6 API refused ({outcome.rule}): {outcome.reason}")
+                raise KeyAlreadyHeld(f"t6 API refused ({outcome.rule})")
+            raise T6ApiError(f"t6 API refused ({outcome.rule})")
         if not isinstance(outcome, expect):
             want = expect.model_fields["outcome"].default
             raise T6ApiError(f"t6 API answered {outcome.outcome}, want {want}")

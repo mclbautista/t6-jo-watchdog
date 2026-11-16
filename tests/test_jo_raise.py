@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from jo_watchdog.adapters.t6api import KeyAlreadyHeld
+from jo_watchdog.adapters.t6api import KeyAlreadyHeld, T6ApiError
 from jo_watchdog.ledger.db import Ledger
 from tests.test_worker_planning import KEY, Harness
 
@@ -97,6 +97,50 @@ class RaiseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(h.telegram.reactions, [])
 
 
+    async def test_an_unreachable_api_spends_no_attempt(self):
+        h = Harness(self, task="Cut")
+        h.notion.down = True
+        await h.run()
+        row = h.ledger.get_message(KEY)
+        self.assertEqual((row["state"], row["attempts"]), ("extracted", 0))
+
+    async def test_a_refused_preview_is_a_failure_that_retries_and_then_alerts(self):
+        h = Harness(self, task="Cut")
+
+        async def refused(inputs):
+            raise T6ApiError("t6 API refused (project_archived)")
+
+        h.notion.preview_job_order = refused
+        await h.run()
+        row = h.ledger.get_message(KEY)
+        self.assertEqual((row["state"], row["attempts"]), ("extracted", 1))
+        self.assertIn("project_archived", row["last_error"])
+        for _ in h.config.retry_schedule_seconds:
+            h.ledger._conn.execute("UPDATE messages SET next_attempt_at = '2000-01-01T00:00:00Z'")
+            await h.worker.drain_once()
+        row = h.ledger.get_message(KEY)
+        self.assertTrue(row["exhausted_at"])
+        kinds = [r["kind"] for r in h.ledger._conn.execute("SELECT kind FROM outbox")]
+        self.assertIn("outage_alert", kinds)
+        self.assertEqual(h.notion.created, [])
+
+    async def test_a_held_key_that_jo_find_cannot_show_is_a_failure_not_an_abort(self):
+        h = Harness(self, task="Cut")
+
+        async def held(inputs, token):
+            raise KeyAlreadyHeld("t6 API refused (telegram_key)")
+
+        async def nothing(chat_id, message_id):
+            return []
+
+        h.notion.confirm_job_order = held
+        h.notion.find_job_orders = nothing
+        await h.run()  # must not raise
+        row = h.ledger.get_message(KEY)
+        self.assertEqual((row["state"], row["attempts"]), ("writing", 1))
+        self.assertIn("KeyAlreadyHeld", row["last_error"])
+
+
 class MigrationTests(unittest.TestCase):
     def test_migration_12_adds_a_nullable_jo_id_and_leaves_old_rows_null(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,3 +149,25 @@ class MigrationTests(unittest.TestCase):
             columns = {r["name"]: r for r in ledger._conn.execute("PRAGMA table_info(messages)")}
             self.assertIn("jo_id", columns)
             self.assertEqual(columns["jo_id"]["notnull"], 0)
+
+
+class DuplicateKeySpellingTests(unittest.TestCase):
+    PAGE = "1A2B3C4D-0000-4000-8000-0000000000AB"
+    UNDASHED = "1a2b3c4d-0000-4000-8000-0000000000ab".replace("-", "")
+
+    def test_migration_14_rewrites_old_dashed_keys_to_the_apis_spelling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ledger.db"
+            ledger = Ledger(path)
+            ledger._conn.execute(
+                "INSERT INTO messages (chat_id, message_id, telegram_key, update_id, raw_source,"
+                " text, first_line, state, created_at, updated_at, jo_key)"
+                " VALUES (-1, 1, '-1:1', 1, '{}', 't', 't', 'done', 'x', 'x', ?)",
+                (f"{self.PAGE}|74",),
+            )
+            ledger._conn.execute("DELETE FROM schema_version WHERE version = 14")
+            ledger.close()
+            ledger = Ledger(path)
+            self.addCleanup(ledger.close)
+            (row,) = ledger._conn.execute("SELECT jo_key FROM messages").fetchall()
+            self.assertEqual(row["jo_key"], f"{self.UNDASHED}|74")

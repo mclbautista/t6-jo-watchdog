@@ -64,6 +64,11 @@ def finding_line(f: Finding) -> str:
             return f'{_role(p["role"])} "{_field(p["raw"])}" didn\'t match a contact'
         case "ambiguous_person":
             return f'{_role(p["role"])} "{_field(p["raw"])}" matches more than one contact'
+        case "assignee_no_person_id":
+            return (
+                f'Assignee "{_field(p["raw"])}" ({_field(p.get("contact", ""))}) has no T6 Person ID:'
+                " left out of the Job Order's assignees, and an End of Shift deadline ignores them"
+            )
         case "unresolved_project":
             return f'Project mention "{_field(p["raw"])}" didn\'t match any known Project Code'
         case "unknown_department":

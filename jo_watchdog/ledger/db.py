@@ -436,8 +436,9 @@ class Ledger:
             "INSERT INTO messages"
             " (chat_id, message_id, telegram_key, update_id, raw_source, text,"
             "  first_line, state,"
-            "  posted_at, text_sha256, forward_origin_type, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  posted_at, text_sha256, forward_origin_type, created_at, updated_at,"
+            "  masked_text, masker_version, masked_count)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 't6-api', 0)",
             (
                 chat_id,
                 message_id,

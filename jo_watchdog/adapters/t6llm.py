@@ -29,6 +29,7 @@ from jo_watchdog.core.extraction import (
     build_user_message,
     fewshot_examples,
 )
+from jo_watchdog.core.safe_error import describe_validation_error
 
 TASK_NAME = "jo_watchdog_extract"
 # Slack on top of the client's own socket timeout for the thread to come back.
@@ -46,6 +47,11 @@ _FAILURES: dict[str, ClassifierOutcome] = {
     "unresolved_placeholder": "schema_violation",
     "leak": "schema_violation",
 }
+
+
+def _api_error_text(exc: APIError) -> str:
+    """The HTTP status only: a response body can echo what was sent."""
+    return f"API error: HTTP {exc.status}"
 
 
 def _count(value: Any) -> int | None:
@@ -91,7 +97,7 @@ class T6LlmClassifier:
         except TimeoutError:
             return self._result("timeout", started, error="no answer from the t6 API in time")
         except APIError as exc:
-            return self._result("api_error", started, error=str(exc)[:500])
+            return self._result("api_error", started, error=_api_error_text(exc))
 
         if isinstance(outcome, Unavailable):
             timed_out = "timed out" in outcome.reason
@@ -105,7 +111,7 @@ class T6LlmClassifier:
             return self._result(
                 failure,
                 started,
-                error=f"refused ({outcome.rule}): {outcome.reason}"[:500],
+                error=f"refused ({outcome.rule}) {outcome.failure or ''}".strip(),
                 retry_after=outcome.retry_after,
             )
         if not isinstance(outcome, Done):
@@ -128,5 +134,5 @@ class T6LlmClassifier:
         try:
             extraction = Extraction.model_validate(run.get("output"))
         except ValidationError as exc:
-            return self._result("schema_violation", started, error=str(exc)[:1000], **trace)
+            return self._result("schema_violation", started, error=describe_validation_error(exc), **trace)
         return self._result("ok", started, extraction=extraction, **trace)

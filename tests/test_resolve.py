@@ -74,6 +74,9 @@ ANSWERS = {
     "5550001": resolved(MIRA, "Mira Santos", "exact_id"),
     "Kim": ContactMatch(status="ambiguous"),
 }
+for _match in ANSWERS.values():  # registered in T6, so no "no Person ID" finding
+    if _match.page_id:
+        _match.t6_id = f"t6n_{_match.page_id}"
 
 
 class ResolvedBy(unittest.IsolatedAsyncioTestCase):
@@ -274,6 +277,11 @@ class PeopleResolutionTests(ResolvedBy):
         out = await self.resolve("Ramon, Mira / Lena", "Ramon")
         self.assertEqual(out.assigned, [RAMON, MIRA, LENA])
         self.assertEqual(out.assignee_ids, ["t6n_ramon", "t6n_mira"])
+        # The one left out of the API call is a finding, not silence; cc never needs an ID.
+        self.assertEqual(
+            [(f.code, f.params["raw"]) for f in out.findings],
+            [("assignee_no_person_id", "Lena")],
+        )
 
     async def test_no_assignee_resolved_gives_no_person_ids(self):
         out = await self.resolve("@user_eight")

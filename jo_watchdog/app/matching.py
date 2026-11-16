@@ -14,7 +14,7 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from jo_watchdog.adapters.protocols import DeliverableMatcher, DeliverableSource
 from jo_watchdog.adapters.t6decide import PROMPT_TAG, REQUESTED_MODEL, MatcherError
@@ -29,6 +29,7 @@ from jo_watchdog.core.matching import (
     deliverable_property,
     hint_line,
 )
+from jo_watchdog.core.safe_error import describe_validation_error
 
 MAX_ATTEMPTS = 2  # the call plus one inline retry
 # The model inputs are masked by the t6 API, not by the watchdog; ``llm_calls`` records who.
@@ -235,6 +236,15 @@ def _failed_call(
         output_tokens=result.output_tokens if result else None,
         latency_ms=round(elapsed * 1000),
         outcome=failure,
-        error=str(exc)[:500],
+        error=_safe_error(exc),
         detail_json=_detail(project, candidates, result),
     )
+
+
+def _safe_error(exc: Exception) -> str:
+    """A matcher error is text-free by construction; any other error is kept by class only."""
+    if isinstance(exc, MatcherError):
+        return str(exc)[:500]
+    if isinstance(exc, ValidationError):
+        return describe_validation_error(exc)
+    return type(exc).__name__
