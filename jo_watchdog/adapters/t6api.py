@@ -17,11 +17,13 @@ it Project and Job Order names come back as placeholders and resolution fails.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Callable
 from typing import Any
 
 from t6.client import APIError, Client, Unavailable
 from t6.verbs import (
+    DeliverableCandidatesInput,
     DepartmentsInput,
     Done,
     JoFindInput,
@@ -34,12 +36,15 @@ from t6.verbs import (
 )
 
 from jo_watchdog.adapters.protocols import PageRef
+from jo_watchdog.core.matching import Candidate
 from jo_watchdog.core.payload import page_url_for
 from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
 
 CALL_TIMEOUT_SECONDS = 30.0
 # ``person find`` takes at most this many mentions in one call.
 MAX_MENTIONS = 50
+# A masked read names a page "[kind N]"; a bracketed token is never a real Deliverable name.
+_PLACEHOLDER = re.compile(r"\[[^\]]*\d+\]")
 
 
 class T6ApiError(Exception):
@@ -110,6 +115,27 @@ class T6Api:
         if match and not result.get("needs_review"):
             return ProjectMatch(page_id=match["page_id"], code=match.get("project_code"))
         return ProjectMatch()
+
+    async def deliverable_candidates(self, project_page_id: str) -> list[Candidate]:
+        """``deliverable candidates``: every Deliverable of the Project, in the API's order.
+
+        The matcher compares names, so a masked or empty name fails the call; it needs the
+        ``unmasked`` grant.
+        """
+        result = await self._call(
+            self._client.deliverable_candidates,
+            DeliverableCandidatesInput(project=project_page_id),
+        )
+        candidates: list[Candidate] = []
+        for item in result["candidates"]:
+            name = item.get("name")
+            if not name or _PLACEHOLDER.search(name):
+                raise T6ApiError(
+                    "deliverable candidates returned a masked or empty name; "
+                    "the API key needs the unmasked grant"
+                )
+            candidates.append(Candidate(page_id=item["page_id"], name=name))
+        return candidates
 
     # -- Job Orders (recovery and read-back) -----------------------------------------
 

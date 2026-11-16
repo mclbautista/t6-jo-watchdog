@@ -46,10 +46,10 @@ class FakeDeliverables:
     def __init__(self, candidates=(), *, failures: int = 0):
         self.candidates = list(candidates)
         self.failures = failures
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[str] = []
 
-    async def query_project_deliverables(self, data_source_id, project_page_id):
-        self.calls.append((data_source_id, project_page_id))
+    async def deliverable_candidates(self, project_page_id):
+        self.calls.append(project_page_id)
         if self.failures:
             self.failures -= 1
             raise RuntimeError("notion 503")
@@ -122,7 +122,7 @@ class EligibilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_candidates_come_from_the_resolved_project(self):
         source = FakeDeliverables(CANDS)
         await stage(FakeMatcher(LINKABLE), source)
-        self.assertEqual(source.calls, [("0a4ff084-3138-429c-8dbe-4d802aded74f", "proj-1")])
+        self.assertEqual(source.calls, ["proj-1"])
 
     async def test_jev_gets_masked_text_and_project_name(self):
         jev = FakeMatcher(LINKABLE)

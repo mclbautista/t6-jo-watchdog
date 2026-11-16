@@ -12,6 +12,7 @@ from t6.verbs import Ambiguous, Done, Refused
 
 from jo_watchdog.adapters.protocols import (
     ContactMatcher,
+    DeliverableSource,
     DirectoryReader,
     JobOrderReader,
     Matcher,
@@ -64,6 +65,9 @@ class FakeClient:
 
     def project_resolve(self, inputs):
         return self._answer("project_resolve", inputs)
+
+    def deliverable_candidates(self, inputs):
+        return self._answer("deliverable_candidates", inputs)
 
     def jo_find(self, inputs):
         return self._answer("jo_find", inputs)
@@ -212,6 +216,51 @@ class FindProjectTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_seam_satisfies_the_matcher_protocols(self):
         self.assertIsInstance(T6Api(FakeClient()), ProjectMatcher)
         self.assertIsInstance(T6Api(FakeClient()), Matcher)
+
+
+class DeliverableCandidatesTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def answer(*items):
+        return Done(result={"candidates": [
+            {"page_id": i, "name": n, "status": None, "deliverable_class": None} for i, n in items
+        ]})
+
+    async def test_candidates_keep_the_api_order_and_the_page_id_and_name_shape(self):
+        client = FakeClient(
+            deliverable_candidates=self.answer(
+                ("d2", "Moonglow Archive"), ("d1", "Moonglow FTR SCR")
+            )
+        )
+        found = await T6Api(client).deliverable_candidates("proj-1")
+        self.assertEqual(
+            [(c.page_id, c.name) for c in found],
+            [("d2", "Moonglow Archive"), ("d1", "Moonglow FTR SCR")],
+        )
+        self.assertEqual(client.inputs["deliverable_candidates"].project, "proj-1")
+
+    async def test_a_deliverable_only_in_notion_comes_through_with_its_name(self):
+        client = FakeClient(deliverable_candidates=self.answer(("d9", "Notion-only Promo")))
+        found = await T6Api(client).deliverable_candidates("proj-1")
+        self.assertEqual([(c.page_id, c.name) for c in found], [("d9", "Notion-only Promo")])
+
+    async def test_no_candidates_is_an_empty_list(self):
+        client = FakeClient(deliverable_candidates=self.answer())
+        self.assertEqual(await T6Api(client).deliverable_candidates("proj-1"), [])
+
+    async def test_a_masked_or_missing_name_fails_the_call(self):
+        for name in ("[deliverable 3]", None, ""):
+            with self.subTest(name=name):
+                client = FakeClient(deliverable_candidates=self.answer(("d1", name)))
+                with self.assertRaises(T6ApiError):
+                    await T6Api(client).deliverable_candidates("proj-1")
+
+    async def test_a_down_api_raises(self):
+        api = T6Api(FakeClient(deliverable_candidates=Unavailable("down")))
+        with self.assertRaises(T6ApiError):
+            await api.deliverable_candidates("proj-1")
+
+    async def test_the_seam_satisfies_the_source_protocol(self):
+        self.assertIsInstance(T6Api(FakeClient()), DeliverableSource)
 
 
 class ThreadingTests(unittest.IsolatedAsyncioTestCase):

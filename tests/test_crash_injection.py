@@ -74,7 +74,7 @@ ADAPTER_CALLS = {
     "notion": ("create_page", "retrieve_page", "find_pages_by_telegram_key"),
     "classifier": ("classify",),
     "matcher": ("match",),
-    "deliverables": ("query_project_deliverables",),
+    "deliverables": ("deliverable_candidates",),
 }
 
 
@@ -342,7 +342,7 @@ class ScriptedDeliverables:
         self.script = list(script) or [[FTR, PROMO]]
         self.calls = 0
 
-    async def query_project_deliverables(self, data_source_id, project_page_id):
+    async def deliverable_candidates(self, project_page_id):
         self.calls += 1
         step = self.script.pop(0) if len(self.script) > 1 else self.script[0]
         if isinstance(step, Exception):
@@ -436,7 +436,7 @@ class JevPipeline(Pipeline):
 # Every external-call seam each Jev scenario must hit, so a refactor that stops
 # reaching one fails loudly instead of silently shrinking the injected set.
 JEV_SEAMS = {
-    "deliverables.query_project_deliverables",
+    "deliverables.deliverable_candidates",
     "matcher.match",
     "ledger.plan_message",
     "ledger.mark_writing",
@@ -499,7 +499,7 @@ class JevCrashInjectionTests(unittest.IsolatedAsyncioTestCase):
         if name is not None:
             source_script, matcher_script, _ = scenarios()[name]
             for label, script in (
-                ("deliverables.query_project_deliverables", source_script),
+                ("deliverables.deliverable_candidates", source_script),
                 ("matcher.match", matcher_script),
             ):
                 raising |= {
@@ -550,7 +550,7 @@ class JevCrashInjectionTests(unittest.IsolatedAsyncioTestCase):
         _, counts = await self.clean("matcher_retry")
         self.assertEqual(counts["matcher.match"], 2)
         _, counts = await self.clean("query_retry")
-        self.assertEqual(counts["deliverables.query_project_deliverables"], 2)
+        self.assertEqual(counts["deliverables.deliverable_candidates"], 2)
         _, counts = await self.clean("matcher_exhausted")
         self.assertEqual(counts["matcher.match"], 2)
 

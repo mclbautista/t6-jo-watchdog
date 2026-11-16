@@ -113,7 +113,7 @@ def build_worker(config: Config, ledger: Ledger, adapters: Adapters, **worker_op
         config=config,
         caches=caches,
         matcher=adapters.matcher,
-        deliverables=adapters.notion,
+        deliverables=adapters.t6api,
         **worker_options,
     )
 

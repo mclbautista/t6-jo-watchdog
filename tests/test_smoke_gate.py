@@ -119,7 +119,7 @@ class SyntheticCaptureTests(unittest.IsolatedAsyncioTestCase):
         built = adapters(
             notion=notion or CachedApi(), matcher=matcher or FakeMatcher(LINKABLE)
         )
-        built.notion.query_project_deliverables = FakeDeliverables(CANDS).query_project_deliverables
+        built.t6api.deliverable_candidates = FakeDeliverables(CANDS).deliverable_candidates
         with (
             mock.patch.object(smoke, "missing_secrets", return_value=[]),
             mock.patch.object(smoke, "build_adapters", return_value=built),

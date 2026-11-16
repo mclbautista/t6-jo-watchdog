@@ -151,7 +151,7 @@ class ScriptedNotion:
         """The ``project resolve`` answer: the code ``MFG`` in the text names the one Project."""
         return ProjectMatch(page_id=PROJECT_ID, code="MFG") if "MFG" in text else ProjectMatch()
 
-    async def query_project_deliverables(self, data_source_id: str, project_page_id: str):
+    async def deliverable_candidates(self, project_page_id: str):
         return [DELIVERABLE, OTHER_DELIVERABLE]
 
 

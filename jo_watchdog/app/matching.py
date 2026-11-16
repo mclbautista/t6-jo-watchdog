@@ -114,9 +114,7 @@ async def run_match_stage(
     candidates: list[Candidate] | None = None
     for _ in range(MAX_ATTEMPTS):
         try:
-            candidates = await deliverables.query_project_deliverables(
-                config.deliverables_data_source_id, project.page_id
-            )
+            candidates = await deliverables.deliverable_candidates(project.page_id)
             break
         except Exception:
             continue

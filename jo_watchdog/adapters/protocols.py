@@ -186,6 +186,4 @@ class DeliverableMatcher(Protocol):
 class DeliverableSource(Protocol):
     """Live, project-scoped Deliverable candidates (#26)."""
 
-    async def query_project_deliverables(
-        self, data_source_id: str, project_page_id: str
-    ) -> list[Candidate]: ...
+    async def deliverable_candidates(self, project_page_id: str) -> list[Candidate]: ...
