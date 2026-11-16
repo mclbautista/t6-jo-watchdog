@@ -29,7 +29,6 @@ from pydantic import (
     model_validator,
 )
 
-from jo_watchdog.adapters.jev import JEV_MODEL, JEV_URL
 from jo_watchdog.adapters.notion import NOTION_VERSION
 from jo_watchdog.core.resolve import ResolveSettings
 
@@ -48,8 +47,7 @@ _NOTION_ID_KEYS = (
     "deliverables_data_source_id",
     "standing_cc_contact_page_id",
 )
-_URL_KEYS = ("jev_url",)
-_NON_EMPTY_KEYS = ("llm_model_hint", "jev_model", "ledger_path")
+_NON_EMPTY_KEYS = ("llm_model_hint", "ledger_path")
 
 # Keys the running service cannot do without; checked by ``require_live_keys``.
 LIVE_REQUIRED_KEYS = (
@@ -134,11 +132,8 @@ class Config(BaseModel):
     heartbeat_time: str = "07:00"
     timezone: str = "Asia/Manila"
 
-    # Deliverable matching (Jev via OpenRouter, #26)
+    # Deliverable matching (the t6 API's ``llm decide``, #26, #147)
     deliverables_data_source_id: str = "0a4ff084-3138-429c-8dbe-4d802aded74f"
-    jev_url: str = JEV_URL
-    jev_model: str = JEV_MODEL
-    jev_timeout_seconds: float = Field(default=30, gt=0)
     t_link: float = Field(default=0.90, ge=0, le=1)
     t_hint: float = Field(default=0.50, ge=0, le=1)
     deliverable_link_enabled: bool = False
@@ -226,10 +221,6 @@ def _production_problems(config: Config) -> list[str]:
             problems.append(f"{key} is not a Notion id (32 hex characters, dashes optional)")
         elif not value and key not in LIVE_REQUIRED_KEYS:
             problems.append(f"{key} must not be empty")
-    for key in _URL_KEYS:
-        parts = urlsplit(getattr(config, key).strip())
-        if parts.scheme not in ("http", "https") or not parts.hostname:
-            problems.append(f"{key} must be an http(s) URL with a host")
     for key in _NON_EMPTY_KEYS:
         if not getattr(config, key).strip():
             problems.append(f"{key} must not be empty")

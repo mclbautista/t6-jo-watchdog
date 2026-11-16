@@ -1,6 +1,6 @@
 """Production adapter and worker construction, shared by ``run`` and ``smoke.py``.
 
-The smoke check must exercise the same wiring the service runs: caches, the Jev
+The smoke check must exercise the same wiring the service runs: caches, the
 matcher and the Deliverable source all present. Both entry points build their
 worker here, and a caller replaces individual adapters (for example a recording
 Telegram) rather than assembling a worker by hand.
@@ -15,7 +15,6 @@ from jo_watchdog.app.config import (
     Config,
     gateway_secret,
     notion_token,
-    openrouter_token,
     t6_api_secret,
     t6_api_url,
     telegram_token,
@@ -45,12 +44,12 @@ class Adapters:
 
 
 def build_adapters(config: Config) -> Adapters:
-    """The real aiogram, httpx and t6 API (reads, matching, extraction) and Jev adapters."""
+    """The real aiogram, httpx and t6 API (reads, matching, extraction) adapters."""
     from t6.client import Client
 
-    from jo_watchdog.adapters.jev import JevMatcher
     from jo_watchdog.adapters.notion import NotionAdapter
     from jo_watchdog.adapters.t6api import T6Api
+    from jo_watchdog.adapters.t6decide import T6DecideMatcher
     from jo_watchdog.adapters.t6llm import T6LlmClassifier
 
     notion = NotionAdapter(notion_token())
@@ -60,11 +59,9 @@ def build_adapters(config: Config) -> Adapters:
         model_hint=config.llm_model_hint,
         timeout_seconds=config.llm_timeout_seconds,
     )
-    matcher = JevMatcher(
-        openrouter_token(),
-        url=config.jev_url,
-        model=config.jev_model,
-        timeout=config.jev_timeout_seconds,
+    matcher = T6DecideMatcher(
+        Client(t6_api_url(), t6_api_secret(), timeout=config.llm_timeout_seconds),
+        timeout_seconds=config.llm_timeout_seconds,
     )
 
     telegram, close_telegram = _build_telegram(config)
@@ -74,7 +71,7 @@ def build_adapters(config: Config) -> Adapters:
         t6api=t6api,
         classifier=classifier,
         matcher=matcher,
-        closers=[notion.close, matcher.close, close_telegram],
+        closers=[notion.close, close_telegram],
     )
 
 

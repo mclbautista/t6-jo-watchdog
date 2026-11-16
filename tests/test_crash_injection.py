@@ -24,7 +24,7 @@ call the uncertain-writing reconciliation makes (#56).
 import inspect
 import unittest
 
-from jo_watchdog.adapters.jev import MatcherError
+from jo_watchdog.adapters.t6decide import MatcherError
 from jo_watchdog.app.caches import FORMAT_VERSION, CacheManager
 from jo_watchdog.core.matching import Candidate, CandidateDecision, MatchResult
 from jo_watchdog.ledger.db import Ledger

@@ -32,11 +32,10 @@ Side effects, by step:
   ``pipeline`` creates one clearly marked Job Order (the integration cannot
   archive it; the URL is printed so you can delete it by hand).
 - ``extraction`` makes two live ``llm run`` calls (a text with a credential and a text without)
-  through the production classifier; ``jev`` makes exactly one live Decisions request that holds
-  all three regression pairs (``tests/fixtures/jev/regression_pairs.json``), validated by
-  the production matcher. Both need explicit authorization and cost tokens. They print the
-  returned snapshot, token counts, probabilities and any ``Retry-After``/``X-RateLimit-*``
-  headers; a 429 is reported only if one actually came back.
+  through the production classifier; ``jev`` makes three live ``llm decide`` calls, one for each
+  regression pair (``tests/fixtures/jev/regression_pairs.json``), validated by the production
+  matcher. Both need explicit authorization and cost tokens. They print the returned snapshot,
+  token counts and probabilities; a refusal prints its class and any ``retry_after``.
 - ``threshold_tuning`` is offline: it scores the recorded Jev answers, rewrites
   ``docs/tuning/threshold-results.json`` and stays MANUAL until the owner attests the
   review. It never edits config or enables linking.
@@ -107,7 +106,7 @@ from jo_watchdog.app.config import (
     t6_api_secret,
     t6_api_url,
 )
-from jo_watchdog.app.model_smoke import ModelCheck, check_extraction, check_jev
+from jo_watchdog.app.model_smoke import ModelCheck, check_decide, check_extraction
 from jo_watchdog.app.smoke_gate import (
     FAIL,
     MANUAL,
@@ -699,17 +698,17 @@ async def step_extraction(s: Smoke) -> Result:
 
 
 async def step_jev(s: Smoke) -> Result:
-    """One Decisions request holding all three regression pairs; needs no Notion access."""
-    key = os.environ.get("OPENROUTER_API_KEY")
-    if not key:
-        return skip("OPENROUTER_API_KEY not set")
+    """Three live ``llm decide`` calls, one for each regression pair; needs no Notion access."""
+    if not os.environ.get("T6_API_URL") or not os.environ.get("T6_API_SECRET"):
+        return skip("T6_API_URL or T6_API_SECRET not set")
+    from t6.client import Client
+
+    client = Client(t6_api_url(), t6_api_secret(), timeout=s.config.llm_timeout_seconds)
     return _print_check(
-        await check_jev(
-            key,
+        await check_decide(
+            client,
             ROOT / "tests/fixtures/jev/regression_pairs.json",
-            url=s.config.jev_url,
-            model=s.config.jev_model,
-            timeout=s.config.jev_timeout_seconds,
+            timeout=s.config.llm_timeout_seconds,
             t_link=s.config.t_link,
             t_hint=s.config.t_hint,
         )

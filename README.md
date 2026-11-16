@@ -41,7 +41,7 @@ jo_watchdog/
               verification findings, ops-report rendering
   ledger/     SQLite (WAL, versioned schema), offsets, state machine
   adapters/   Telegram (aiogram-as-client), Notion (httpx, pinned version), t6 API
-              (reads, matching, extraction via `llm run`), Jev Deliverable matcher (OpenRouter Decisions API)
+              (reads, matching, extraction via `llm run`, Deliverable matching via `llm decide`)
   prompts/    versioned few-shot turns for the classify/extract prompt
   app/        config, worker loop, entry point
 tests/        unittest (runs under pytest too); real SQLite + fake adapters
@@ -316,7 +316,7 @@ resumes the held plans exactly as stored.
 ### Deliverable linking
 
 Deliverable linking is a separate, staged switch. `deliverable_link_enabled`
-stays `false` (Jev runs in shadow mode and its decisions are kept, but no
+stays `false` (the matcher runs in shadow mode and its decisions are kept, but no
 relation is written) until the owner turns it on, independently of capture
 going live.
 

@@ -8,16 +8,16 @@ import json
 import unittest
 from pathlib import Path
 
-import httpx
+from t6.verbs import Done
 
-from jo_watchdog.adapters.jev import JevMatcher, MatcherError, MatchEvidence
 from jo_watchdog.adapters.t6api import raise_input
+from jo_watchdog.adapters.t6decide import MatcherError, T6DecideMatcher
 from jo_watchdog.app.config import Config
 from jo_watchdog.app.matching import ResolvedProject, run_match_stage, with_deliverable
 from jo_watchdog.core.job_order import JobOrderPlan
 from jo_watchdog.core.masker import WITHHELD
 from jo_watchdog.core.matching import Candidate, CandidateDecision, MatchResult
-from tests.fakes import FakeJobOrders
+from tests.fakes import FakeDecideClient, FakeJobOrders
 
 PAIRS = json.loads(
     (Path(__file__).parent / "fixtures" / "jev" / "regression_pairs.json").read_text(
@@ -195,22 +195,6 @@ class FailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail["candidates"][0]["p_match"], 0.95)
         self.assertNotIn("p_match", detail["candidates"][1])
 
-    async def test_matcher_error_evidence_is_stored_without_a_decision(self):
-        ev = MatchEvidence(
-            returned_model="m-1",
-            input_tokens=5,
-            output_tokens=6,
-            probabilities={"d-ftr": {"match": 0.7}},
-        )
-        err = MatcherError("invalid_body", "x", evidence=ev)
-        result = await stage(FakeMatcher(err, err))
-        call = result.llm_calls[0]
-        self.assertEqual(
-            (call.returned_model, call.input_tokens, call.output_tokens), ("m-1", 5, 6)
-        )
-        self.assertEqual(json.loads(call.detail_json)["candidates"][0]["p_match"], 0.7)
-        self.assertIsNone(result.decision)
-
     async def test_unexpected_exception_never_escapes(self):
         result = await stage(FakeMatcher(ValueError("bug"), KeyError("bug")))
         self.assertEqual(result.outcome, "skipped")
@@ -314,27 +298,19 @@ class PipelineShapeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RegressionPairTests(unittest.IsolatedAsyncioTestCase):
-    """The three known real JO-to-Deliverable pairs, through the real adapter."""
+    """The three known real JO-to-Deliverable pairs, through the real adapter and a fake API."""
 
     async def run_pair(self, pair, *, link_enabled):
-        seen = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen["body"] = json.loads(request.content)
-            return httpx.Response(pair["response"]["status"], json=pair["response"]["body"])
-
-        jev = JevMatcher(api_key="k", transport=httpx.MockTransport(handler))
-        try:
-            result = await stage(
-                jev,
-                FakeDeliverables([Candidate(**c) for c in pair["candidates"]]),
-                project=ResolvedProject(**pair["project"]),
-                text=pair["source_text"],
-                deliverable_link_enabled=link_enabled,
-            )
-        finally:
-            await jev.close()
-        return result, seen["body"]
+        client = FakeDecideClient(Done(result=pair["response"]["body"]))
+        result = await stage(
+            T6DecideMatcher(client),
+            FakeDeliverables([Candidate(**c) for c in pair["candidates"]]),
+            project=ResolvedProject(**pair["project"]),
+            text=pair["source_text"],
+            deliverable_link_enabled=link_enabled,
+        )
+        [request] = client.requests
+        return result, request.model_dump()
 
     async def test_pairs(self):
         self.assertEqual(len(PAIRS), 3)

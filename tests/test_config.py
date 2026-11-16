@@ -46,9 +46,6 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(config.deadman_stale_minutes, 10)
         self.assertEqual(config.heartbeat_time, "07:00")
         self.assertEqual(config.timezone, "Asia/Manila")
-        self.assertEqual(config.jev_url, "https://openrouter.ai/api/alpha/decisions")
-        self.assertEqual(config.jev_model, "~typesafe/jev-latest")
-        self.assertEqual(config.jev_timeout_seconds, 30)
         self.assertEqual(config.t_link, 0.90)
         self.assertEqual(config.t_hint, 0.50)
 
@@ -75,6 +72,9 @@ class ValidationTests(unittest.TestCase):
             {"honorifics": ["ate"]},
             {"llm_timeout_seconds": 60},  # the API waits up to 60 s for the provider
             {"deepseek_base_url": "x"},  # removed with the DeepSeek client
+            {"jev_url": "https://x.example"},  # removed with the Jev client (#147)
+            {"jev_model": "x"},
+            {"jev_timeout_seconds": 30},
             {"deepseek_model": "x"},
             {"deepseek_timeout_seconds": 60},
             {"cache_refresh_hours": 0},
@@ -122,7 +122,6 @@ class ProductionReadinessTests(unittest.TestCase):
     def test_valid_configuration_boots(self):
         require_live_keys(live())
         require_live_keys(live(standing_cc_contact_page_id="c00000000000400080000000000000cc"))
-        require_live_keys(live(jev_url="http://localhost:8080"))
         require_live_keys(live(notion_version="2027-01-31"))
 
     def test_negative_group_chat_ids_are_legitimate(self):
@@ -137,9 +136,7 @@ class ProductionReadinessTests(unittest.TestCase):
             "standing_cc_contact_page_id": ["", "short"],
             "intake_topic_id": [-5],
             "ops_topic_id": [-1],
-            "jev_url": ["", "ftp://x.example", "openrouter.ai/api", "https://", "file:///etc/passwd"],
             "llm_model_hint": ["", "  "],
-            "jev_model": [""],
             "ledger_path": ["", " "],
             "notion_version": ["", "latest", "2026-3-1"],
         }
@@ -152,10 +149,10 @@ class ProductionReadinessTests(unittest.TestCase):
 
     def test_all_problems_are_reported_without_values(self):
         with self.assertRaises(ValueError) as ctx:
-            require_live_keys(live(intake_topic_id=-7, jev_url="secret-looking-value"))
+            require_live_keys(live(intake_topic_id=-7, notion_version="secret-looking-value"))
         message = str(ctx.exception)
         self.assertIn("intake_topic_id", message)
-        self.assertIn("jev_url", message)
+        self.assertIn("notion_version", message)
         self.assertNotIn("secret-looking-value", message)
 
     def test_placeholders_are_distinct_from_readiness(self):

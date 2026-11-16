@@ -1,14 +1,13 @@
-"""The worker runs the Jev match stage between planning and the one Notion write (#26)."""
+"""The worker runs the Deliverable match stage between planning and the one Notion write (#26)."""
 
-import copy
 import json
 import unittest
 
-import httpx
+from t6.verbs import Refused
 
-from jo_watchdog.adapters.jev import JevMatcher, MatcherError
+from jo_watchdog.adapters.t6decide import MatcherError, T6DecideMatcher
 from jo_watchdog.app.worker import Worker
-from tests.fakes import FakeClassifier, ok_result
+from tests.fakes import FakeClassifier, FakeDecideClient, decide_answer, ok_result
 from tests.test_match_stage import CANDS, LINKABLE, FakeDeliverables, FakeMatcher
 from tests.test_worker_planning import KEY, Harness
 
@@ -35,38 +34,18 @@ class MatchHarness(Harness):
         return self.ledger.stage_result(KEY, "match")
 
 
-def jev_body(**extra) -> dict:
-    """A valid Decisions body for CANDS, with ``extra`` fields on the first answer."""
-    answer = {
-        "type": "choice",
-        "choice": "match",
-        "confidence": 0.9,
-        "probabilities": {"match": 0.95, "maybe": 0.04, "no": 0.01},
-    }
-    other = copy.deepcopy(answer)
-    other["probabilities"] = {"match": 0.02, "maybe": 0.08, "no": 0.90}
-    return {
-        "model": "typesafe/jev-1.14-20261014",
-        "answers": {"c0": {**answer, **extra}, "c1": other},
-        "usage": {"input_tokens": 210, "output_tokens": 31},
-    }
+GOOD = decide_answer((0.95, 0.04, 0.01), (0.02, 0.08, 0.90))
+ONE_OF_TWO = decide_answer((0.95, 0.04, 0.01))  # no answer for the second candidate
 
 
 class WorkerInvalidAnswerTests(unittest.IsolatedAsyncioTestCase):
-    """Real adapter over a mock transport into the real ledger (#55)."""
+    """Real adapter over a fake t6 API into the real ledger (#55, #147)."""
 
-    async def run_with(self, body, *, link_enabled=True):
-        seen = []
-
-        def handler(request):
-            seen.append(request)
-            return httpx.Response(200, json=body)
-
-        matcher = JevMatcher("k", transport=httpx.MockTransport(handler))
-        h = MatchHarness(self, matcher, link_enabled=link_enabled)
+    async def run_with(self, *answers, link_enabled=True):
+        client = FakeDecideClient(*answers)
+        h = MatchHarness(self, T6DecideMatcher(client), link_enabled=link_enabled)
         await h.run()
-        await matcher.close()
-        return h, seen
+        return h, client.requests
 
     def llm_rows(self, h):
         return [
@@ -78,8 +57,8 @@ class WorkerInvalidAnswerTests(unittest.IsolatedAsyncioTestCase):
             )
         ]
 
-    async def test_extra_reason_is_never_a_link_and_evidence_is_kept(self):
-        h, seen = await self.run_with(jev_body(reason="clearly the FTR SCR"))
+    async def test_an_answer_that_misses_a_candidate_is_never_a_link(self):
+        h, seen = await self.run_with(ONE_OF_TWO)
         self.assertEqual(len(seen), 2)  # one inline retry
         self.assertNotIn("Deliverable", h.notion.created[0]["properties"])
         self.assertEqual(h.stage()["outcome"], "skipped")
@@ -88,38 +67,34 @@ class WorkerInvalidAnswerTests(unittest.IsolatedAsyncioTestCase):
         rows = self.llm_rows(h)
         self.assertEqual([r["outcome"] for r in rows], ["invalid_body", "invalid_body"])
         for r in rows:
-            self.assertEqual(r["returned_model"], "typesafe/jev-1.14-20261014")
-            self.assertEqual(r["requested_model"], "~typesafe/jev-latest")
             self.assertEqual(r["prompt_tag"], "match-v1")
-            self.assertEqual((r["input_tokens"], r["output_tokens"]), (210, 31))
             detail = json.loads(r["detail_json"])
             self.assertEqual(
                 [(c["page_id"], c["name"]) for c in detail["candidates"]],
                 [(c.page_id, c.name) for c in CANDS],
             )
-            self.assertEqual(detail["candidates"][0]["p_match"], 0.95)
-            self.assertEqual(detail["candidates"][1]["p_no"], 0.90)
 
-    async def test_extra_name_echo_is_rejected(self):
-        h, _ = await self.run_with(jev_body(name="Moonglow FTR SCR"))
+    async def test_probabilities_that_do_not_sum_to_one_are_never_a_link(self):
+        h, _ = await self.run_with(decide_answer((0.9, 0.5, 0.5), (0.02, 0.08, 0.90)))
         self.assertEqual(h.stage()["outcome"], "skipped")
         self.assertNotIn("Deliverable", h.notion.created[0]["properties"])
 
-    async def test_partial_response_keeps_available_probabilities(self):
-        body = jev_body()
-        del body["answers"]["c1"]
-        h, _ = await self.run_with(body)
-        detail = json.loads(self.llm_rows(h)[0]["detail_json"])
-        self.assertEqual(detail["candidates"][0]["p_match"], 0.95)
-        self.assertNotIn("p_match", detail["candidates"][1])
-        self.assertEqual(h.stage()["outcome"], "skipped")
+    async def test_a_refusal_is_recorded_by_its_class_and_the_row_still_completes(self):
+        refused = Refused(rule="provider", reason="LLM provider failed", failure="timeout")
+        h, seen = await self.run_with(refused)
+        self.assertEqual(len(seen), 2)
+        self.assertEqual([r["outcome"] for r in self.llm_rows(h)], ["timeout", "timeout"])
+        self.assertEqual(h.ledger.get_message(KEY)["state"], "done")
 
-    async def test_valid_body_still_links(self):
-        h, _ = await self.run_with(jev_body())
+    async def test_a_valid_answer_still_links(self):
+        h, _ = await self.run_with(GOOD)
         self.assertEqual(
             h.notion.created[0]["properties"]["Deliverable"], {"relation": [{"id": "d-ftr"}]}
         )
-        self.assertEqual([r["outcome"] for r in self.llm_rows(h)], ["ok"])
+        rows = self.llm_rows(h)
+        self.assertEqual([r["outcome"] for r in rows], ["ok"])
+        self.assertEqual(rows[0]["returned_model"], "typesafe/jev-1.14-20261014")
+        self.assertEqual((rows[0]["input_tokens"], rows[0]["output_tokens"]), (210, 31))
 
 
 class WorkerMatchTests(unittest.IsolatedAsyncioTestCase):

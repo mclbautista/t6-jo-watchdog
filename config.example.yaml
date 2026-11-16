@@ -57,11 +57,8 @@ deadman_stale_minutes: 10
 heartbeat_time: "07:00"
 timezone: "Asia/Manila"
 
-# --- Deliverable matching via Jev (#26) ---
+# --- Deliverable matching through the t6 API's `llm decide` (#26, #147) ---
 deliverables_data_source_id: "0a4ff084-3138-429c-8dbe-4d802aded74f"
-jev_url: "https://openrouter.ai/api/alpha/decisions"
-jev_model: "~typesafe/jev-latest"   # OpenRouter's alias; the leading ~ matters
-jev_timeout_seconds: 30
 t_link: 0.90
 t_hint: 0.50
 deliverable_link_enabled: false     # shadow mode until the owner turns it on

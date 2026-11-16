@@ -476,3 +476,39 @@ class FakeLlmClient:
         if isinstance(answer, Exception):
             raise answer
         return answer
+
+
+def decide_answer(*probabilities, model="typesafe/jev-1.14-20261014", prompt=210, completion=31):
+    """A ``llm decide`` ``Done`` for ``(match, maybe, no)`` triples, one per candidate in order."""
+    return Done(
+        result={
+            "answers": [
+                {
+                    "index": i,
+                    "choice": max(zip(p, ("match", "maybe", "no"), strict=True))[1],
+                    "probabilities": dict(zip(("match", "maybe", "no"), p, strict=True)),
+                }
+                for i, p in enumerate(probabilities)
+            ],
+            "model": model,
+            "provider": "decisions",
+            "tokens": {"prompt": prompt, "completion": completion, "total": prompt + completion},
+            "zdr": False,
+        }
+    )
+
+
+class FakeDecideClient:
+    """Stands in for ``t6.client.Client``: scripted ``llm decide`` answers (an outcome or an
+    exception; the last repeats), and the requests it was sent."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers) or [decide_answer((0.95, 0.04, 0.01), (0.02, 0.08, 0.90))]
+        self.requests: list = []
+
+    def llm_decide(self, inputs):
+        self.requests.append(inputs)
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer

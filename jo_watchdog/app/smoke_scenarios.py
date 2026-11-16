@@ -22,8 +22,8 @@ from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from jo_watchdog.adapters.jev import MatcherError
 from jo_watchdog.adapters.protocols import ClassifyResult, IncomingUpdate
+from jo_watchdog.adapters.t6decide import MatcherError
 from jo_watchdog.app.caches import CacheManager
 from jo_watchdog.app.config import Config
 from jo_watchdog.app.smoke_gate import FAIL, PASS, Result

@@ -65,7 +65,7 @@ def match_samples(pairs: Sequence[dict]) -> list[MatchSample]:
     for pair in pairs:
         body = pair["response"]["body"]["answers"]
         for i, candidate in enumerate(pair["candidates"]):
-            p = body[f"c{i}"]["probabilities"]
+            p = body[i]["probabilities"]
             samples.append(
                 MatchSample(
                     name=pair["name"],
