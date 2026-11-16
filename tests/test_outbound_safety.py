@@ -60,6 +60,7 @@ class WalkingCaptureSafetyTests(unittest.IsolatedAsyncioTestCase):
             ledger=ledger,
             telegram=telegram,
             notion=notion,
+            job_orders=notion,
             classifier=FakeClassifier(),
             config=make_config(),
         )
@@ -91,10 +92,12 @@ class WalkingCaptureSafetyTests(unittest.IsolatedAsyncioTestCase):
         ledger = Ledger(data_dir / "ledger.db")
         self.addCleanup(ledger.close)
         telegram = FakeTelegram([update(7, message_id=42, topic_id=999, text=SOURCE)])
+        notion = FakeNotion()
         worker = Worker(
             ledger=ledger,
             telegram=telegram,
-            notion=FakeNotion(),
+            notion=notion,
+            job_orders=notion,
             classifier=FakeClassifier(),
             config=make_config(),
         )

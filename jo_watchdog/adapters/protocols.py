@@ -97,28 +97,43 @@ class TelegramClient(Protocol):
 
 @runtime_checkable
 class NotionClient(Protocol):
+    """The Job Order write. Reads of Job Orders go through ``JobOrderReader``."""
+
     async def create_page(self, payload: dict) -> PageRef: ...
 
-    async def retrieve_page(self, page_id: str) -> dict: ...
 
-    async def find_pages_by_telegram_key(
-        self, data_source_id: str, telegram_key: str
-    ) -> list[PageRef]:
-        """Pages whose ``Telegram Key`` equals ``telegram_key``, oldest first.
+@runtime_checkable
+class JobOrderReader(Protocol):
+    """Job Order recovery and read-back, over the t6 API (``jo find``, ``jo get``)."""
+
+    async def find_job_orders(self, telegram_key: str) -> list[PageRef]:
+        """Job Orders whose Telegram Key equals ``telegram_key``, oldest first.
 
         Reserved for recovering from an uncertain write; normal success reads
         back by id.
         """
         ...
 
+    async def read_job_order(self, page_id: str) -> dict:
+        """The Job Order on a page: ``name``, ``telegram_key``, ``date``, ``deadline``."""
+        ...
+
 
 @runtime_checkable
-class NotionReader(Protocol):
-    """The read side the six-hour caches need."""
+class DirectoryReader(Protocol):
+    """The read side the six-hour caches need, over the t6 API."""
 
-    async def query_all(self, data_source_id: str) -> list[dict[str, Any]]: ...
+    async def people(self) -> list[dict[str, Any]]:
+        """``person list`` items."""
+        ...
 
-    async def retrieve_data_source(self, data_source_id: str) -> dict: ...
+    async def projects(self) -> list[dict[str, Any]]:
+        """``project list`` items."""
+        ...
+
+    async def departments(self) -> list[str]:
+        """Department names, MISC included."""
+        ...
 
 
 @runtime_checkable

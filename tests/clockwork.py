@@ -102,6 +102,7 @@ class Pipeline:
             ledger=ledger,
             telegram=self.telegram,
             notion=self.notion,
+            job_orders=self.notion,
             classifier=self.classifier,
             config=self.config,
             caches=self.caches,

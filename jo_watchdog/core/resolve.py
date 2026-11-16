@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import time
 
 from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
@@ -40,8 +41,10 @@ class Person(BaseModel):
     name: str
     telegram_user_id: str = ""
     telegram_handle: str = ""
-    aliases: str = ""
-    end_of_shift: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    # A parsed time of day from the API; the raw option text ("10:00 PM", "Flexible /
+    # Variable") or "" from a Notion page. Left to right: a time string reads as a time.
+    end_of_shift: time | str = Field(default="", union_mode="left_to_right")
 
 
 class ProjectEntry(BaseModel):
@@ -97,7 +100,7 @@ class AssigneeShift(BaseModel):
 
     page_id: str
     name: str
-    end_of_shift: str  # the raw select value: "10:00 PM", "Flexible / Variable" or ""
+    end_of_shift: time | str = Field(union_mode="left_to_right")  # as on the Person
 
 
 class PeopleResolution(BaseModel):
@@ -142,10 +145,12 @@ def normalize_handle(handle: str) -> str:
     return handle.strip().lstrip("@").casefold()
 
 
-def split_aliases(aliases: str, honorifics: Iterable[str] = DEFAULT_HONORIFICS) -> list[str]:
-    """Contacts ``Aliases`` is comma-separated; each entry is normalized like a mention."""
+def normalize_aliases(
+    aliases: Iterable[str], honorifics: Iterable[str] = DEFAULT_HONORIFICS
+) -> list[str]:
+    """Each Contact alias is normalized like a mention; blanks are dropped."""
     out = []
-    for part in aliases.split(","):
+    for part in aliases:
         norm = normalize_name(part, honorifics)
         if norm:
             out.append(norm)
@@ -234,7 +239,7 @@ class PeopleIndex:
                 self.by_user_id.setdefault(p.telegram_user_id.strip(), set()).add(p.page_id)
             if normalize_handle(p.telegram_handle):
                 self.by_handle.setdefault(normalize_handle(p.telegram_handle), set()).add(p.page_id)
-            for alias in split_aliases(p.aliases, self.honorifics):
+            for alias in normalize_aliases(p.aliases, self.honorifics):
                 self.by_alias.setdefault(alias, set()).add(p.page_id)
             title = normalize_name(p.name, self.honorifics)
             if title:

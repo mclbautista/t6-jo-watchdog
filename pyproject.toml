@@ -10,7 +10,7 @@ dependencies = [
     "PyYAML>=6.0",
     "tzdata>=2024.1",
     "rapidfuzz>=3.9",
-    "t6[privacy] @ git+https://github.com/mclbautista/t6-core.git@2208348ae94a5ba6414412bd888e645afa4f1c65",
+    "t6[client,privacy] @ git+https://github.com/mclbautista/t6-core.git@2208348ae94a5ba6414412bd888e645afa4f1c65",
 ]
 
 [project.optional-dependencies]

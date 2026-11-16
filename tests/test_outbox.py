@@ -76,6 +76,7 @@ class Harness:
             ledger=self.ledger,
             telegram=self.telegram,
             notion=self.notion,
+            job_orders=self.notion,
             classifier=self.classifier,
             config=self.config,
             sleep=no_sleep,

@@ -28,6 +28,8 @@ from tests.test_worker import make_config, no_sleep
 URL = "http://gateway.test:8780"
 ALL = {
     "TELEGRAM_BOT_TOKEN": "t",
+    "T6_API_URL": "http://t6.test",
+    "T6_API_SECRET": "s",
     "NOTION_API_KEY": "n",
     "DEEPSEEK_API_KEY": "d",
     "OPENROUTER_API_KEY": "o",
@@ -107,6 +109,7 @@ class Rig:
             ledger=self.ledger,
             telegram=self.client,
             notion=self.notion,
+            job_orders=self.notion,
             classifier=FakeClassifier(),
             config=gateway_config(),
             sleep=no_sleep,
@@ -246,6 +249,7 @@ class RollbackToDirectTests(unittest.IsolatedAsyncioTestCase):
             ledger=rig.ledger,
             telegram=telegram,
             notion=rig.notion,
+            job_orders=rig.notion,
             classifier=FakeClassifier(),
             config=make_config(),
             sleep=no_sleep,

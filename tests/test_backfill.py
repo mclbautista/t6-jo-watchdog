@@ -239,6 +239,7 @@ class IngestCommandTests(unittest.TestCase):
                     ledger=ledger,
                     telegram=telegram,
                     notion=notion,
+                    job_orders=notion,
                     classifier=FakeClassifier(),
                     config=entry.load_config(self.config),
                 )

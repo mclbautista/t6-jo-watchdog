@@ -26,14 +26,14 @@ PEOPLE = [
         "telegram_user_id": "222",
         "end_of_shift": "10:00 PM",
     },
-    {"page_id": "c-ana", "name": "Anabelle Reyes", "aliases": "Ana"},
+    {"page_id": "c-ana", "name": "Anabelle Reyes", "aliases": ["Ana"]},
     {"page_id": PRIYA, "name": "Priya"},
 ]
 PROJECTS = [{"page_id": "proj-mfg", "name": "Manufacturing", "code": "MFG"}]
 
 
 def make_caches(ledger, config, *, people=PEOPLE, departments=("TOC", "VID")):
-    caches = CacheManager(ledger=ledger, notion=None, config=config)
+    caches = CacheManager(ledger=ledger, directory=None, config=config)
     caches._apply("people", people, FETCHED)
     caches._apply("projects", PROJECTS, FETCHED)
     caches._apply("departments", list(departments), FETCHED)
@@ -70,6 +70,7 @@ class Harness:
             ledger=self.ledger,
             telegram=self.telegram,
             notion=self.notion,
+            job_orders=self.notion,
             classifier=FakeClassifier(ok_result(**fields)),
             config=self.config,
             caches=self.caches,
@@ -200,7 +201,7 @@ class PlannerWiringTests(unittest.IsolatedAsyncioTestCase):
     async def test_overlapping_entity_does_not_assign_the_wrong_person(self):
         people = [
             {"page_id": "c-jo", "name": "Jo Lim", "telegram_user_id": "123"},
-            {"page_id": "c-lena", "name": "Lena Cruz", "aliases": "Lena"},
+            {"page_id": "c-lena", "name": "Lena Cruz", "aliases": ["Lena"]},
             {"page_id": PRIYA, "name": "Priya"},
         ]
         h = Harness(
@@ -358,7 +359,7 @@ def _stored_with_time_zone(plan: dict, *, utc: bool) -> None:
 class NotionDatePayloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_date_and_deadline_are_sent_as_manila_offset_instants_without_time_zone(self):
         h = Harness(self, task="Cut", deadline_raw="September 16, 2am")
-        h.notion = h.worker.notion = StrictDateNotion()
+        h.notion = h.worker.notion = h.worker.job_orders = StrictDateNotion()
         await h.run()
         [payload] = h.notion.created
         for name in ("Date", "Deadline"):
@@ -391,7 +392,7 @@ class NotionDatePayloadTests(unittest.IsolatedAsyncioTestCase):
             return page
 
         shifted.retrieve_page = retrieve
-        h.notion = h.worker.notion = shifted
+        h.notion = h.worker.notion = h.worker.job_orders = shifted
         await h.run()
         row = h.ledger.get_message(KEY)
         self.assertIn("Deadline differs", row["readback_mismatch"])
@@ -411,7 +412,7 @@ class NotionDatePayloadTests(unittest.IsolatedAsyncioTestCase):
         for utc in (False, True):
             with self.subTest(utc=utc):
                 h = Harness(self, task="Cut", deadline_raw="September 16, 2am")
-                h.notion = h.worker.notion = StrictDateNotion()
+                h.notion = h.worker.notion = h.worker.job_orders = StrictDateNotion()
                 h.worker.config = h.config.model_copy(update={"dry_run": True})
                 await h.run()
                 plan = h.plan()
@@ -435,7 +436,7 @@ class NotionDatePayloadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rejected_write_keeps_the_provider_message_and_creates_no_page(self):
         h = Harness(self, task="Cut")
-        h.notion = h.worker.notion = FakeNotion(
+        h.notion = h.worker.notion = h.worker.job_orders = FakeNotion(
             fail_create=True,
             create_error=NotionError(400, "validation_error", "time zone offsets from UTC"),
         )

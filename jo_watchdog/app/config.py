@@ -59,8 +59,12 @@ LIVE_REQUIRED_KEYS = (
     "owner_telegram_handle",
 )
 
+# What the service needs from its environment (T6_API_URL is not secret, but it is just as
+# required: the reads go through the t6 API).
 SECRET_KEYS = (
     "TELEGRAM_BOT_TOKEN",
+    "T6_API_URL",
+    "T6_API_SECRET",
     "NOTION_API_KEY",
     "DEEPSEEK_API_KEY",
     "OPENROUTER_API_KEY",
@@ -333,6 +337,14 @@ def telegram_token() -> str:
 
 def gateway_secret() -> str:
     return _secret(GATEWAY_SECRET_KEY)
+
+
+def t6_api_url() -> str:
+    return _secret("T6_API_URL")
+
+
+def t6_api_secret() -> str:
+    return _secret("T6_API_SECRET")
 
 
 def notion_token() -> str:

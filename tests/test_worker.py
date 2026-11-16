@@ -47,6 +47,7 @@ def make_worker(
         ledger=ledger,
         telegram=telegram,
         notion=notion,
+        job_orders=notion,
         classifier=classifier or FakeClassifier(),
         config=make_config(**config_overrides),
         sleep=no_sleep,

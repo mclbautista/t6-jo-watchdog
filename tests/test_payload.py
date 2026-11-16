@@ -5,7 +5,7 @@ import unittest
 from jo_watchdog.core.job_order import JobOrderPlan
 from jo_watchdog.core.payload import (
     build_notion_payload,
-    extract_readback_fields,
+    readback_fields,
     verify_readback,
 )
 from jo_watchdog.core.plan import Plan
@@ -116,10 +116,26 @@ class DateReadbackTests(unittest.TestCase):
         }
         self.assertEqual(self.check(dates), [])
 
-    def test_extract_reads_both_dates_from_a_live_page(self):
-        page = {"properties": {"Date": {"date": {"start": "x"}}, "Deadline": {"date": None}}}
+    def test_readback_fields_read_both_dates_from_a_job_order(self):
+        job_order = {
+            "name": "N",
+            "telegram_key": "-1:2",
+            "date": "2026-09-15T10:00:00+08:00",
+            "deadline": None,
+        }
         self.assertEqual(
-            extract_readback_fields(page)["dates"], {"Date": {"start": "x"}, "Deadline": None}
+            readback_fields(job_order),
+            {
+                "name": "N",
+                "telegram_key": "-1:2",
+                "dates": {"Date": {"start": "2026-09-15T10:00:00+08:00"}, "Deadline": None},
+            },
+        )
+
+    def test_a_job_order_without_a_key_or_dates_reads_back_blank(self):
+        self.assertEqual(
+            readback_fields({"name": None, "telegram_key": None}),
+            {"name": "", "telegram_key": "", "dates": {"Date": None, "Deadline": None}},
         )
 
 

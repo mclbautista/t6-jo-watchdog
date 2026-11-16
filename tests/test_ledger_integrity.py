@@ -90,6 +90,8 @@ class StartupIntegrityTests(LedgerFiles):
         self.corrupt()
         env = {
             "TELEGRAM_BOT_TOKEN": "t",
+            "T6_API_URL": "http://t6.test",
+            "T6_API_SECRET": "s",
             "NOTION_API_KEY": "n",
             "DEEPSEEK_API_KEY": "d",
             "OPENROUTER_API_KEY": "o",

@@ -24,6 +24,7 @@ class MatchHarness(Harness):
             ledger=self.ledger,
             telegram=self.telegram,
             notion=self.notion,
+            job_orders=self.notion,
             classifier=FakeClassifier(ok_result(**fields)),
             config=self.config,
             caches=self.caches,
