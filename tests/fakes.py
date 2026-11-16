@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -11,8 +12,7 @@ from t6.verbs import Done, Refused
 
 from jo_watchdog.adapters.protocols import ClassifyResult, IncomingUpdate, PageRef
 from jo_watchdog.adapters.t6api import T6ApiError
-from jo_watchdog.app.caches import department_options, person_from_page, project_from_page
-from jo_watchdog.core.deadline import parse_shift_hour
+from jo_watchdog.app.caches import person_from_page, project_from_page
 from jo_watchdog.core.extraction import EXTRACTED_FIELDS, PROMPT_TAG, Extraction
 from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
 
@@ -136,88 +136,207 @@ def live_date(date: dict | None) -> dict | None:
     return {"start": start.isoformat(), "end": None, "time_zone": None}
 
 
-class FakeNotion:
-    """Echoes written properties back so read-back comparison can run."""
+_HEADER = re.compile(r"^\s*(?P<project>.+?)\s*-\s*(?P<department>[A-Za-z]+)\s*-\s*JO\s*#?(?P<number>\d+)", re.I)
+
+
+class FakeJobOrders:
+    """A fake t6 API for Job Orders: ``jo raise`` (preview, confirm), ``jo get`` and ``jo find``.
+
+    It builds the rule fields from a ``JoRaiseMessage`` the way the API does, in the simplest
+    way the tests need: the Name is the header line, the number and Department are read from a
+    ``<PROJECT> - <DEPT> - JO #<N>`` header (the Department only if it is one of ``departments``,
+    else a finding), the keys are ``<chat>:<message>`` and ``<project>|<number>``, and a deadline
+    phrase answers what ``deadlines`` says (an ISO time, a source and optionally findings), else blank.
+
+    ``created`` holds one Notion-shaped payload for each Job Order raised, so a test reads
+    properties and children. ``page_delay`` makes the page appear after that many polls;
+    ``lost_confirms`` makes that many confirms write and then fail to answer. ``down`` makes
+    every call fail as an unreachable API does.
+    """
 
     def __init__(
         self,
         *,
+        departments=("TOC", "VID"),
+        deadlines: dict | None = None,
         fail_create: bool = False,
         wrong_name: bool = False,
         fail_retrieve: int = 0,
         fail_find: int = 0,
         create_error: Exception | None = None,
+        page_delay: int = 0,
+        lost_confirms: int = 0,
     ):
+        self.departments = list(departments)
+        self.deadlines = deadlines or {}
         self.fail_create = fail_create
         self.wrong_name = wrong_name
-        self.fail_retrieve = fail_retrieve  # fail this many retrieve calls first
-        self.fail_find = fail_find  # fail this many Telegram-Key queries first
-        self.find_calls = 0
-        self.create_calls = 0
+        self.fail_retrieve = fail_retrieve  # fail this many ``jo get`` by page calls first
+        self.fail_find = fail_find  # fail this many ``jo find`` calls first
         self.create_error = create_error  # raised instead of the default failure
+        self.page_delay = page_delay
+        self.lost_confirms = lost_confirms
+        self.down = False
+        self.find_calls = 0
+        self.create_calls = 0  # confirm attempts
+        self.previews: list = []
+        self.confirms: list = []
         self.created: list[dict] = []
         self.pages: dict[str, dict] = {}
+        self.raised: dict[str, str] = {}  # idempotency key -> jo_id
+        self.polls: dict[str, int] = {}
         self._counter = 0
 
-    async def create_page(self, payload: dict):
+    def _jo_gate(self) -> None:
+        if self.down:
+            raise T6ApiError("t6 API unavailable: connection refused")
+
+    def _rules(self, inputs) -> dict:
+        message = inputs.message
+        if message is None:  # a plan from before #151 sends its own rule fields
+            f = inputs.fields
+            return dict(
+                name=f.get("name"),
+                jo_number=f.get("number"),
+                department=f.get("department"),
+                deadline=f.get("deadline"),
+                deadline_source="stated" if f.get("deadline") else "blank",
+                telegram_key=f.get("telegram_key"),
+            )
+        header = _HEADER.match(message.header_text)
+        token = header["department"].upper() if header else (message.department_text or "").upper()
+        department = token if token in self.departments else None
+        digits = header["number"] if header else "".join(c for c in message.number_text or "" if c.isdigit())
+        deadline, source, *rest = self.deadlines.get(message.deadline_text, (None, "blank"))
+        return dict(
+            name=message.header_text.strip(),
+            jo_number=f"#{int(digits)}" if digits else None,
+            department=department,
+            deadline=deadline,
+            deadline_source=source,
+            deadline_findings=rest[0] if rest else [],
+            department_findings=[{"code": "unknown_department", "params": {"token": token}}]
+            if token and department is None
+            else [],
+            telegram_key=f"{message.chat_id}:{message.message_id}",
+            duplicate_key=f"{message.project}|{int(digits)}" if message.project and digits else None,
+        )
+
+    async def preview_job_order(self, inputs):
+        from jo_watchdog.core.job_order import RaisePreview
+
+        self._jo_gate()
+        self.previews.append(inputs)
+        return RaisePreview(token=f"token-{len(self.previews)}", **self._rules(inputs))
+
+    async def confirm_job_order(self, inputs, token: str) -> str:
+        self._jo_gate()
         self.create_calls += 1
+        self.confirms.append(inputs)
         if self.fail_create:
-            raise self.create_error or RuntimeError("notion create failed")
-        self._counter += 1
-        page_id = f"page-{self._counter}"
-        name = payload["properties"]["Name"]["title"][0]["text"]["content"]
-        key = payload["properties"]["Telegram Key"]["rich_text"][0]["text"]["content"]
-        if self.wrong_name:
-            name = "WRONG NAME"
-        self.pages[page_id] = {
-            "id": page_id,
-            "url": f"https://notion.example/{page_id}",
-            "properties": {
-                "Name": {"title": [{"plain_text": name}]},
-                "Telegram Key": {"rich_text": [{"plain_text": key}]},
-                **{
-                    field: {"type": "date", "date": live_date(payload["properties"][field]["date"])}
-                    for field in ("Date", "Deadline")
-                    if field in payload["properties"]
-                },
-            },
-        }
-        self.created.append(payload)
-        return PageRef(id=page_id, url=f"https://notion.example/{page_id}")
+            raise self.create_error or T6ApiError("t6 API unavailable: raise failed")
+        key = inputs.idempotency_key
+        if key not in self.raised:  # the same key is the same Job Order, as in the API
+            self._counter += 1
+            jo_id = f"t6j_{self._counter}"
+            page_id = f"page-{self._counter}"
+            rules = self._rules(inputs)
+            self.raised[key] = jo_id
+            self.created.append(self._payload(inputs, rules))
+            date = (inputs.fields or {}).get("date")
+            self.pages[page_id] = {
+                "id": page_id,
+                "jo_id": jo_id,
+                "url": f"https://www.notion.so/{page_id.replace('-', '')}",
+                "name": "WRONG NAME" if self.wrong_name else rules["name"],
+                "telegram_key": rules["telegram_key"],
+                "date": live_date({"start": date}) if date else None,
+                "deadline": live_date({"start": rules["deadline"]}) if rules["deadline"] else None,
+            }
+            self.polls[jo_id] = 0
+        if self.lost_confirms:
+            self.lost_confirms -= 1
+            raise T6ApiError("t6 API gave no answer in 30 s")
+        return self.raised[key]
 
-    async def retrieve_page(self, page_id: str) -> dict:
-        if self.fail_retrieve:
-            self.fail_retrieve -= 1
-            raise RuntimeError("notion retrieve failed")
-        return self.pages[page_id]
+    async def job_order_page(self, jo_id: str):
+        self._jo_gate()
+        self.polls[jo_id] += 1
+        if self.polls[jo_id] <= self.page_delay:
+            return None
+        return next(p["id"] for p in self.pages.values() if p["jo_id"] == jo_id)
 
-    async def find_pages_by_telegram_key(self, data_source_id: str, telegram_key: str):
+    def _visible(self, page: dict) -> bool:
+        return self.page_delay == 0 or self.polls[page["jo_id"]] > self.page_delay
+
+    async def find_job_orders(self, chat_id: int, message_id: int):
+        self._jo_gate()
         self.find_calls += 1
         if self.fail_find:
             self.fail_find -= 1
-            raise RuntimeError("notion query failed")
+            raise T6ApiError("t6 API unavailable: find failed")
+        key = f"{chat_id}:{message_id}"
         return [
             PageRef(id=page["id"], url=page["url"])
             for page in self.pages.values()
-            if page["properties"]["Telegram Key"]["rich_text"][0]["plain_text"] == telegram_key
+            if page["telegram_key"] == key and self._visible(page)
         ]
 
-    # The read side, shaped as the t6 API answers it (``jo get`` and ``jo find``). The
-    # worker reads through these; they go through the Notion-shaped methods above, so the
-    # failure counters and the seams that wrap those methods still apply.
-
     async def read_job_order(self, page_id: str) -> dict:
-        props = (await self.retrieve_page(page_id))["properties"]
+        self._jo_gate()
+        if self.fail_retrieve:
+            self.fail_retrieve -= 1
+            raise T6ApiError("t6 API unavailable: get failed")
+        page = self.pages[page_id]
         return {
             "page_id": page_id,
-            "name": props["Name"]["title"][0]["plain_text"],
-            "telegram_key": props["Telegram Key"]["rich_text"][0]["plain_text"],
-            "date": ((props.get("Date") or {}).get("date") or {}).get("start"),
-            "deadline": ((props.get("Deadline") or {}).get("date") or {}).get("start"),
+            "name": page["name"],
+            "telegram_key": page["telegram_key"],
+            "date": (page["date"] or {}).get("start"),
+            "deadline": (page["deadline"] or {}).get("start"),
         }
 
-    async def find_job_orders(self, telegram_key: str):
-        return await self.find_pages_by_telegram_key("unused", telegram_key)
+    @staticmethod
+    def _payload(inputs, rules: dict) -> dict:
+        """The Notion-shaped page a raise writes, from the fields and the rule values."""
+        fields = inputs.fields or {}
+
+        def text(value):
+            return {"rich_text": [{"type": "text", "text": {"content": value}}]}
+
+        names = {
+            "title": "Title", "subtitle": "Subtitle", "task": "Task", "purpose": "Purpose",
+            "source": "Source / Source Drive", "platform": "Platform",
+            "link_settings": "Link Settings", "watermark": "Watermark",
+            "mode_of_transfer": "Mode of Transfer", "blocker": "Blocker ", "pending": "Pending",
+            "notes": "JO Notes", "watchdog_notes": "Watchdog Notes",
+        }
+        props: dict = {
+            "Name": {"title": [{"text": {"content": rules["name"]}}]},
+            "Telegram Key": text(rules["telegram_key"]),
+            "Status": {"status": {"name": fields.get("status")}},
+        }
+        if fields.get("date"):
+            props["Date"] = {"date": {"start": fields["date"]}}
+        if rules.get("jo_number"):
+            props["JO Number"] = text(rules["jo_number"])
+        if rules.get("department"):
+            props["Department"] = {"select": {"name": rules["department"]}}
+        if rules.get("deadline"):
+            props["Deadline"] = {"date": {"start": rules["deadline"]}}
+        for field, prop in names.items():
+            if field in fields:
+                props[prop] = text(fields[field])
+        for field, prop in (("assigned_ids", "Assigned"), ("cc_ids", "cc"), ("deliverable_ids", "Deliverable")):
+            if field in fields:
+                props[prop] = {"relation": [{"id": i} for i in fields[field]]}
+        project = inputs.message.project if inputs.message else fields.get("project_id")
+        props["Projects"] = {"relation": [{"id": project}] if project else []}
+        children = [
+            {"paragraph": {"rich_text": [{"type": "text", "text": {"content": line}}]}}
+            for line in (fields.get("source_text") or "").split("\n")
+        ]
+        return {"properties": props, "children": children}
 
 
 NOTION_FIXTURES = Path(__file__).parent / "fixtures" / "notion"
@@ -255,7 +374,6 @@ class RecordedDirectory:
             for page in _recorded(name)["results"]:
                 person = person_from_page(page)
                 user_id = person.telegram_user_id
-                shift = parse_shift_hour(person.end_of_shift)  # the API sends a time as text
                 people.append(
                     {
                         "page_id": person.page_id,
@@ -263,7 +381,6 @@ class RecordedDirectory:
                         "telegram_user_id": int(user_id) if user_id.isdigit() else None,
                         "telegram_handle": person.telegram_handle or None,
                         "aliases": person.aliases,
-                        "end_of_shift": shift.isoformat() if shift else None,
                     }
                 )
         return people
@@ -280,14 +397,15 @@ class RecordedDirectory:
             for p in [project_from_page(page)]
         ]
 
-    async def departments(self) -> list[str]:
-        self._enter("departments")
-        return department_options(_recorded("job_orders_data_source.json"))
 
 
-def resolved(page_id: str, name: str, method: str = "normalized") -> ContactMatch:
-    """A ``person find`` answer with a match."""
-    return ContactMatch(status="resolved", method=method, page_id=page_id, name=name)
+def resolved(
+    page_id: str, name: str, method: str = "normalized", t6_id: str | None = None
+) -> ContactMatch:
+    """A ``person find`` answer with a match (``t6_id``: the Contact's T6 Person ID)."""
+    return ContactMatch(
+        status="resolved", method=method, page_id=page_id, name=name, t6_id=t6_id
+    )
 
 
 def project(page_id: str, code: str) -> ProjectMatch:
@@ -317,7 +435,11 @@ class FakeMatcher:
         self.project_calls.append(text)
         if self.down:
             raise T6ApiError("t6 API unavailable: connection refused")
-        return self.projects.get(text.casefold(), ProjectMatch())
+        folded = text.casefold()
+        if folded in self.projects:
+            return self.projects[folded]
+        words = set(re.findall(r"[\w-]+", folded))  # a code inside longer text (``in_text``)
+        return next((m for code, m in self.projects.items() if code in words), ProjectMatch())
 
     async def find_contacts(self, mentions: list[str]) -> list[ContactMatch]:
         self.calls.append(list(mentions))

@@ -120,8 +120,12 @@ class Config(BaseModel):
     # Ledger
     ledger_path: str = "./data/ledger.db"
 
-    # Planning: header Department token -> Department option (validated live in #22)
-    department_aliases: dict[str, str] = Field(default_factory=lambda: {"TO": "TOC"})
+    # The Department rules run in the t6 API (#151). An old config.yaml that still has the
+    # alias map boots; the value is ignored (``T6_DEPARTMENT_ALIASES`` is the API's).
+    department_aliases: dict[str, str] | None = None
+
+    # How long to wait for the page of a raised Job Order before the retry schedule applies.
+    raise_poll_seconds: float = Field(default=60, ge=0)
 
     # Reliability and heartbeat (#25)
     owner_telegram_handle: str | None = None
@@ -182,13 +186,6 @@ class Config(BaseModel):
             raise ValueError("retry_schedule_seconds must be a non-empty list of positive ints")
         return value
 
-    @field_validator("department_aliases")
-    @classmethod
-    def _department_aliases(cls, value: dict[str, str]) -> dict[str, str]:
-        if any(not k.strip() or not v.strip() for k, v in value.items()):
-            raise ValueError("department_aliases keys and values must be non-empty")
-        return value
-
     @model_validator(mode="after")
     def _cross_field(self) -> Config:
         if not self.intake_chat_id or not self.intake_topic_id:
@@ -209,7 +206,6 @@ class Config(BaseModel):
 def resolve_settings(config: Config) -> ResolveSettings:
     """The pure resolver's knobs, taken from the validated config."""
     return ResolveSettings(
-        department_aliases=config.department_aliases,
         standing_cc_contact_page_id=config.standing_cc_contact_page_id,
     )
 

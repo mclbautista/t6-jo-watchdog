@@ -4,7 +4,7 @@ import unittest
 
 from jo_watchdog.core.job_order import JobOrderPlan
 from jo_watchdog.core.payload import (
-    build_notion_payload,
+    build_raise_fields,
     readback_fields,
     verify_readback,
 )
@@ -12,39 +12,56 @@ from jo_watchdog.core.plan import Plan
 from jo_watchdog.core.verify import readback_properties
 
 
-class BuildPayloadTests(unittest.TestCase):
-    def test_payload_has_parent_properties_and_children(self):
-        plan = Plan(name="First line", telegram_key="-100:1", body_blocks=["hello"])
-        payload = build_notion_payload(plan, data_source_id="ds-1", status="Needs Intake Review")
+def stored_plan(**overrides) -> JobOrderPlan:
+    properties = {
+        "Name": {"title": [{"type": "text", "text": {"content": "MFG - TOC - JO #74"}}]},
+        "Telegram Key": {"rich_text": [{"type": "text", "text": {"content": "-100:1"}}]},
+        "Status": {"status": {"name": "Needs Intake Review"}},
+        "Date": {"date": {"start": "2026-09-28T11:00:00+08:00"}},
+        "JO Number": {"rich_text": [{"type": "text", "text": {"content": "#74"}}]},
+        "Department": {"select": {"name": "TOC"}},
+        "Deadline": {"date": {"start": "2026-09-30T22:00:00+08:00"}},
+        "Task": {"rich_text": [{"type": "text", "text": {"content": "Cut teaser"}}]},
+        "Watchdog Notes": {"rich_text": [{"type": "text", "text": {"content": "a\nb"}}]},
+        "Assigned": {"relation": [{"id": "c-ben"}]},
+        "cc": {"relation": [{"id": "c-ana"}]},
+        "Projects": {"relation": [{"id": "proj-mfg"}]},
+    }
+    return JobOrderPlan(
+        telegram_key="-100:1",
+        name="MFG - TOC - JO #74",
+        properties=properties,
+        body_blocks=["line one", "line two"],
+        **overrides,
+    )
 
-        self.assertEqual(payload["parent"], {"data_source_id": "ds-1"})
-        self.assertEqual(
-            payload["properties"]["Name"],
-            {"title": [{"text": {"content": "First line"}}]},
-        )
-        self.assertEqual(
-            payload["properties"]["Telegram Key"],
-            {"rich_text": [{"text": {"content": "-100:1"}}]},
-        )
-        self.assertEqual(
-            payload["properties"]["Status"], {"status": {"name": "Needs Intake Review"}}
-        )
 
-    def test_children_are_masked_paragraph_blocks(self):
-        plan = Plan(name="n", telegram_key="k", body_blocks=["a", "b"])
-        payload = build_notion_payload(plan, data_source_id="ds", status="s")
-        children = payload["children"]
-        self.assertEqual(len(children), 2)
-        for block in children:
-            self.assertEqual(block["object"], "block")
-            self.assertEqual(block["type"], "paragraph")
-        self.assertEqual(children[0]["paragraph"]["rich_text"][0]["text"]["content"], "a")
-        self.assertEqual(children[1]["paragraph"]["rich_text"][0]["text"]["content"], "b")
+class BuildRaiseFieldsTests(unittest.TestCase):
+    def test_a_message_plan_leaves_the_rule_fields_to_the_api(self):
+        fields = build_raise_fields(stored_plan(raise_message={"header_text": "x"}))
+        for rule in ("name", "number", "department", "deadline", "telegram_key", "project_id"):
+            self.assertNotIn(rule, fields)
+        self.assertEqual(fields["status"], "Needs Intake Review")
+        self.assertEqual(fields["date"], "2026-09-28T11:00:00+08:00")
+        self.assertEqual(fields["task"], "Cut teaser")
+        self.assertEqual(fields["watchdog_notes"], "a\nb")
+        self.assertEqual(fields["assigned_ids"], ["c-ben"])
+        self.assertEqual(fields["cc_ids"], ["c-ana"])
+        self.assertEqual(fields["source_text"], "line one\nline two")
 
-    def test_empty_body_has_no_children(self):
-        plan = Plan(name="n", telegram_key="k", body_blocks=[])
-        payload = build_notion_payload(plan, data_source_id="ds", status="s")
-        self.assertEqual(payload["children"], [])
+    def test_a_plan_stored_before_the_switch_sends_its_own_fields(self):
+        fields = build_raise_fields(stored_plan())
+        self.assertEqual(fields["name"], "MFG - TOC - JO #74")
+        self.assertEqual(fields["number"], "#74")
+        self.assertEqual(fields["department"], "TOC")
+        self.assertEqual(fields["deadline"], "2026-09-30T22:00:00+08:00")
+        self.assertEqual(fields["telegram_key"], "-100:1")
+        self.assertEqual(fields["project_id"], "proj-mfg")
+
+    def test_a_plan_with_no_body_sends_no_body(self):
+        plan = stored_plan(raise_message={})
+        plan.body_blocks = []
+        self.assertNotIn("source_text", build_raise_fields(plan))
 
 
 class VerifyReadbackTests(unittest.TestCase):

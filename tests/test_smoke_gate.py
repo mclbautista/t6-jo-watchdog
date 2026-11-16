@@ -25,8 +25,9 @@ from jo_watchdog.app.smoke_gate import (
     verify_capture,
 )
 from jo_watchdog.app.wiring import Adapters, build_worker, missing_wiring
+from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
 from jo_watchdog.ledger.db import Ledger
-from tests.fakes import FakeClassifier, FakeNotion, FakeTelegram, RecordedDirectory, update
+from tests.fakes import FakeClassifier, FakeJobOrders, FakeTelegram, RecordedDirectory, update
 from tests.test_match_stage import CANDS, LINKABLE, FakeDeliverables, FakeMatcher
 from tests.test_worker import make_config, make_worker, no_sleep
 
@@ -34,14 +35,20 @@ KEY = "-100123:42"
 
 
 
-class CachedApi(FakeNotion, RecordedDirectory):
-    """FakeNotion that also answers as the t6 API: the Job Order reads and the cache refreshes
+class CachedApi(FakeJobOrders, RecordedDirectory):
+    """FakeJobOrders that also answers as the t6 API: the Job Order reads and the cache refreshes
     the production worker makes (the recorded Contacts, first page only, Projects, Departments).
     """
 
     def __init__(self):
-        FakeNotion.__init__(self)
+        FakeJobOrders.__init__(self)
         RecordedDirectory.__init__(self, contact_files=("contacts_query_page1.json",))
+
+    async def find_contacts(self, mentions):
+        return [ContactMatch(status="unresolved") for _ in mentions]
+
+    async def find_project(self, text):
+        return ProjectMatch()
 
 
 def adapters(telegram=None, notion=None, matcher=None) -> Adapters:
@@ -206,7 +213,7 @@ class VerifyCaptureTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_page_with_another_telegram_key_fails(self):
         _, ledger, _, notion = await self._run([update(7, message_id=42)])
         page = notion.pages["page-1"]
-        page["properties"]["Telegram Key"]["rich_text"] = [{"plain_text": "-100123:999"}]
+        page["telegram_key"] = "-100123:999"
         self.assertEqual((await verify_capture(ledger, KEY, job_orders=notion)).status, FAIL)
 
     async def test_a_missing_recorded_reaction_fails(self):

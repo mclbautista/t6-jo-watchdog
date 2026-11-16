@@ -37,7 +37,8 @@ class DefaultsTests(unittest.TestCase):
         config = make()
         self.assertEqual(config.llm_model_hint, "deepseek-chat")
         self.assertEqual(config.llm_timeout_seconds, 70)
-        self.assertEqual(config.department_aliases, {"TO": "TOC"})
+        self.assertIsNone(config.department_aliases)
+        self.assertEqual(config.raise_poll_seconds, 60)
         self.assertEqual(config.cache_refresh_hours, 6)
         self.assertEqual(config.cache_stale_alert_hours, 24)
         self.assertEqual(config.header_date_tolerance_days, 1)
@@ -81,12 +82,17 @@ class ValidationTests(unittest.TestCase):
             {"owner_telegram_handle": "has space"},
             {"captured_reaction": " "},
             {"flagged_reaction": " "},
-            {"department_aliases": {"TO": ""}},
+            {"raise_poll_seconds": -1},
             {"unknown_key": 1},
         ]
         for overrides in bad:
             with self.subTest(overrides=overrides), self.assertRaises(ValidationError):
                 make(**overrides)
+
+    def test_an_old_department_alias_map_is_accepted_and_ignored(self):
+        config = make(department_aliases={"TO": "OE"})
+        self.assertIn("department_aliases", config.model_fields_set)
+        self.assertNotIn("department_aliases", make().model_fields_set)
 
     def test_handles_are_normalized_with_at_sign(self):
         config = make(owner_telegram_handle="cyril_owner", standing_cc_telegram_handle="@priya")
@@ -172,7 +178,8 @@ class ProductionReadinessTests(unittest.TestCase):
 class ExampleFilesTests(unittest.TestCase):
     def test_config_example_lists_every_key_and_boots(self):
         data = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(set(data), set(Config.model_fields))
+        # department_aliases is accepted and ignored (#151), so the example leaves it out.
+        self.assertEqual(set(data), set(Config.model_fields) - {"department_aliases"})
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
             path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")

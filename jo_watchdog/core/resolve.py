@@ -1,8 +1,8 @@
 """Pure core: resolve raw People, Project and Department mentions to Notion values.
 
 The extractor only proposes text; identity is decided elsewhere (resolve, don't
-generate): Contacts and Projects by the t6 API, Departments against the cached
-list. This module splits the posted text into mentions, turns the API's answers
+generate): Contacts and Projects by the t6 API; the Department is the API's too (``jo raise``).
+This module splits the posted text into mentions, turns the API's answers
 into results and findings, and has no I/O.
 
 Precision beats recall. Anything ambiguous stays blank and is reported as a
@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from datetime import time
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -41,9 +40,6 @@ class Person(BaseModel):
     telegram_user_id: str = ""
     telegram_handle: str = ""
     aliases: list[str] = Field(default_factory=list)
-    # A parsed time of day from the API; the raw option text ("10:00 PM", "Flexible /
-    # Variable") or "" from a Notion page. Left to right: a time string reads as a time.
-    end_of_shift: time | str = Field(default="", union_mode="left_to_right")
 
 
 class ProjectEntry(BaseModel):
@@ -63,7 +59,6 @@ class Finding(BaseModel):
 class ResolveSettings(BaseModel):
     """The resolution knobs from config."""
 
-    department_aliases: dict[str, str] = Field(default_factory=dict)
     standing_cc_contact_page_id: str | None = None
 
 
@@ -87,24 +82,19 @@ class MentionResult(BaseModel):
     status: str  # "resolved" | "unresolved" | "ambiguous"
     method: str | None = None  # the API's method: "exact_id" | "normalized" | "fuzzy" | "llm"
     page_id: str | None = None
+    t6_id: str | None = None  # the Contact's T6 Person ID; None for a Contact not registered yet
     contact_name: str | None = None
-
-
-class AssigneeShift(BaseModel):
-    """A resolved assignee's End of Shift, as handed to the deadline resolver."""
-
-    page_id: str
-    name: str
-    end_of_shift: time | str = Field(union_mode="left_to_right")  # as on the Person
 
 
 class PeopleResolution(BaseModel):
     """Relation values and findings for Assigned and cc."""
 
     assigned: list[str] = Field(default_factory=list)
+    # The T6 Person IDs of the resolved assignees, as ``jo raise`` takes them: the API reads
+    # each person's End of Shift itself.
+    assignee_ids: list[str] = Field(default_factory=list)
     cc: list[str] = Field(default_factory=list)
     mentions: list[MentionResult] = Field(default_factory=list)
-    assignee_shifts: list[AssigneeShift] = Field(default_factory=list)
     findings: list[Finding] = Field(default_factory=list)
 
 
@@ -112,18 +102,6 @@ class ProjectResolution(BaseModel):
     page_id: str | None = None
     code: str | None = None
     findings: list[Finding] = Field(default_factory=list)
-
-
-class DepartmentResolution(BaseModel):
-    """``department`` is the exact live option name, or None when it failed validation."""
-
-    department: str | None = None
-    token: str | None = None
-    findings: list[Finding] = Field(default_factory=list)
-
-    @property
-    def valid(self) -> bool:
-        return self.department is not None
 
 
 # -- mentions --------------------------------------------------------------------
@@ -223,6 +201,7 @@ class ContactMatch(BaseModel):
     method: str | None = None  # the API's: exact_id, normalized, fuzzy, llm
     page_id: str | None = None
     name: str | None = None
+    t6_id: str | None = None
 
 
 def _entity_for(segment: str, entities: Sequence[MentionEntity]) -> MentionEntity | None:
@@ -293,6 +272,7 @@ def mention_results(
         status=match.status,
         method=match.method if resolved else None,
         page_id=match.page_id if resolved else None,
+        t6_id=match.t6_id if resolved else None,
         contact_name=match.name if resolved else None,
     )
     if match.status != "unresolved" or not word_matches:
@@ -307,6 +287,7 @@ def mention_results(
             status="resolved",
             method=m.method,
             page_id=m.page_id,
+            t6_id=m.t6_id,
             contact_name=m.name,
         )
         for word, m in zip(mention.words, word_matches, strict=True)
@@ -360,7 +341,7 @@ def _add_unique(ids: list[str], page_id: str) -> None:
 
 
 def people_resolution(
-    results: Sequence[MentionResult], people: Sequence[Person], settings: ResolveSettings
+    results: Sequence[MentionResult], settings: ResolveSettings
 ) -> PeopleResolution:
     """Assigned and cc from the mention results.
 
@@ -375,21 +356,11 @@ def people_resolution(
         if result.status != "resolved" or result.page_id is None:
             continue
         _add_unique(out.assigned if result.role == "assignee" else out.cc, result.page_id)
+        if result.role == "assignee" and result.t6_id:
+            _add_unique(out.assignee_ids, result.t6_id)
 
     if settings.standing_cc_contact_page_id:
         _add_unique(out.cc, settings.standing_cc_contact_page_id)
-
-    known = {p.page_id: p for p in people}
-    names = {r.page_id: r.contact_name for r in out.mentions if r.page_id}
-    for page_id in out.assigned:
-        person = known.get(page_id)
-        out.assignee_shifts.append(
-            AssigneeShift(
-                page_id=page_id,
-                name=person.name if person else names.get(page_id) or "",
-                end_of_shift=person.end_of_shift if person else "",
-            )
-        )
     return out
 
 
@@ -415,35 +386,6 @@ def resolve_project(project_raw: str | None, match: ProjectMatch | None) -> Proj
     return ProjectResolution(
         findings=[Finding(code="unresolved_project", params={"raw": project_raw.strip()})]
     )
-
-
-# -- departments ----------------------------------------------------------------
-
-
-def normalize_department_token(token: str, aliases: Mapping[str, str]) -> str:
-    """Apply the configured header alias map, then uppercase."""
-    stripped = " ".join(token.split())
-    folded_aliases = {k.strip().casefold(): v for k, v in aliases.items()}
-    return folded_aliases.get(stripped.casefold(), stripped).upper()
-
-
-def resolve_department(
-    token: str | None, options: Sequence[str], aliases: Mapping[str, str]
-) -> DepartmentResolution:
-    """Validate a header department token against the live ``Department`` options."""
-    if not token or not token.strip():
-        return DepartmentResolution()
-    normalized = normalize_department_token(token, aliases)
-    wanted = " ".join(normalized.split()).casefold()
-    # More than one live option folding to the same spelling is ambiguous.
-    matches = {o for o in options if " ".join(o.split()).casefold() == wanted}
-    match = next(iter(matches)) if len(matches) == 1 else None
-    if match is None:
-        return DepartmentResolution(
-            token=token.strip(),
-            findings=[Finding(code="unknown_department", params={"token": token.strip()})],
-        )
-    return DepartmentResolution(department=match, token=token.strip())
 
 
 def relation_properties(people: PeopleResolution, project: ProjectResolution) -> dict[str, dict]:

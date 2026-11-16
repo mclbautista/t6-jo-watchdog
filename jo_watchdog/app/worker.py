@@ -1,6 +1,7 @@
 """The worker: poll (commit-before-offset) then drain (capture pipeline).
 
-One asyncio process, one ledger, one Notion writer. Draining classifies each
+One asyncio process, one ledger. Job Orders are raised only through the t6 API
+(``jo raise``). Draining classifies each
 ``received`` message through the t6 API's ``llm run``, then plans and writes the ``extracted``
 ones. The poller and drainer run
 sequentially in ``run``/``run_once``; the commit-before-offset invariant lives
@@ -16,17 +17,18 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from t6.verbs import JoRaiseInput, JoRaiseMessage
+
 from jo_watchdog.adapters.protocols import (
     Classifier,
     DeliverableMatcher,
     DeliverableSource,
     GatewayRef,
-    JobOrderReader,
-    NotionClient,
+    JobOrderApi,
     PageRef,
     TelegramClient,
 )
-from jo_watchdog.adapters.t6api import T6ApiError
+from jo_watchdog.adapters.t6api import KeyAlreadyHeld, T6ApiError, raise_input
 from jo_watchdog.app.caches import CacheManager
 from jo_watchdog.app.config import Config
 from jo_watchdog.app.matching import ResolvedProject, run_match_stage, with_deliverable
@@ -34,18 +36,15 @@ from jo_watchdog.core.duplicates import (
     EarlierCapture,
     add_earlier_row_line,
     find_duplicate,
-    jo_key,
     notes_line,
 )
 from jo_watchdog.core.edits import EditAction, decide_edit
 from jo_watchdog.core.extraction import Extraction, forward_origin_lines
 from jo_watchdog.core.findings import Finding as PlanFinding
-from jo_watchdog.core.header import parse_header
 from jo_watchdog.core.heartbeat import heartbeat_window
 from jo_watchdog.core.job_order import (
     JobOrderPlan,
     apply_resolution,
-    build_job_order_payload,
     load_plan,
     plan_job_order,
 )
@@ -70,7 +69,14 @@ from jo_watchdog.core.report import (
     render_stale_cache,
 )
 from jo_watchdog.core.resolve import mention_entities
-from jo_watchdog.core.verify import MANILA, CaptureFacts, EarlierRow, Finding, verify
+from jo_watchdog.core.verify import (
+    MANILA,
+    CaptureFacts,
+    EarlierRow,
+    Finding,
+    readback_properties,
+    verify,
+)
 from jo_watchdog.ledger.db import Ledger, OutboxMessage, fmt_utc, telegram_key
 from jo_watchdog.ledger.states import State
 
@@ -90,6 +96,8 @@ CLASSIFICATION = "Classification"
 NOTION_WRITE = "Notion write"
 NOTION_READ_BACK = "Notion read-back"
 NOTION_RECONCILIATION = "Notion reconciliation"
+# How long the page of a raised Job Order is waited for between polls of ``jo get``.
+RAISE_POLL_INTERVAL = 2.0
 _TRACE_FIELDS = (
     "requested_model",
     "returned_model",
@@ -123,6 +131,11 @@ class DeadmanExit(Exception):
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def idempotency_key(telegram_key: str) -> str:
+    """The ``jo raise`` key for a message: stable, so a retry cannot raise a second Job Order."""
+    return f"watchdog-jo-{telegram_key}"
 
 
 def _raw_update(msg: dict) -> dict:
@@ -159,8 +172,7 @@ class Worker:
         *,
         ledger: Ledger,
         telegram: TelegramClient,
-        notion: NotionClient,
-        job_orders: JobOrderReader,
+        job_orders: JobOrderApi,
         classifier: Classifier,
         config: Config,
         caches: CacheManager | None = None,
@@ -172,7 +184,6 @@ class Worker:
     ):
         self.ledger = ledger
         self.telegram = telegram
-        self.notion = notion
         self.job_orders = job_orders
         self.classifier = classifier
         self.config = config
@@ -486,10 +497,12 @@ class Worker:
     async def _build_plan(self, msg: dict) -> JobOrderPlan | None:
         """Plan one extracted message: the #21 planner fed by the #22 resolvers.
 
-        Without caches nothing is resolved: no relations, no Department check
-        and no shift deadlines. Contacts and Projects are matched by the t6 API; while it
-        cannot answer there is no plan: the message stays ``extracted`` (no attempt is
-        spent) and the next drain asks again.
+        Without caches nothing is resolved: no relations and no shift deadlines. Contacts and
+        Projects are matched by the t6 API. The posted header, deadline phrase, time and the
+        resolved people go to ``jo raise`` (preview only, never the confirm); the Name, number,
+        Department, deadline and keys it returns are the plan's. While the API cannot answer
+        there is no plan: the message stays ``extracted`` (no attempt is spent) and the next
+        drain asks again.
         """
         key = msg["telegram_key"]
         stored = (self.ledger.stage_result(key, "extract") or {}).get("extraction")
@@ -497,41 +510,65 @@ class Worker:
             log.error("no stored extraction for %s; cannot plan", key)
             return None
         extraction = Extraction.model_validate(stored)
-        message = _raw_update(msg).get("message") or {}
+        raw = _raw_update(msg)
+        message = raw.get("message") or {}
         caches = self.caches
-        aliases = caches.settings.department_aliases if caches is not None else {}
+        posted_at = _posted_at(msg, raw) or _ledger_time(msg)
 
-        people = project = department = None
+        people = project = None
+        header_text = header_line_of(msg["text"])
         if caches is not None:
-            header = parse_header(header_line_of(msg["text"]), aliases)
-            if header is not None:
-                project_raw, department_token = header.project, header.department
-            else:
-                project_raw, department_token = extraction.project_raw, extraction.department_raw
             try:
                 people = await caches.resolve_people(
                     extraction.assignees_raw, extraction.cc_raw, mention_entities(message)
                 )
-                project = await caches.resolve_project(project_raw)
+                project = await caches.resolve_project(header_text, extraction.project_raw)
             except T6ApiError as exc:
                 log.warning("t6 API cannot match %s yet; holding: %s", key, exc)
                 return None
-            department = caches.resolve_department(department_token)
+        raise_message = JoRaiseMessage(
+            header_text=outbound_text(header_text).text,
+            deadline_text=extraction.deadline_raw or "",
+            posted_at=posted_at,
+            chat_id=str(msg["chat_id"]),
+            message_id=str(msg["message_id"]),
+            assignees=people.assignee_ids if people is not None else [],
+            project=project.page_id if project is not None else None,
+            department_text=extraction.department_raw,
+            number_text=extraction.jo_number_raw,
+        )
+        try:
+            rules = await self.job_orders.preview_job_order(
+                JoRaiseInput(
+                    message=raise_message,
+                    no_project=not raise_message.project,
+                    idempotency_key=idempotency_key(key),
+                )
+            )
+        except T6ApiError as exc:
+            log.warning("t6 API cannot preview %s yet; holding: %s", key, exc)
+            return None
 
         plan = plan_job_order(
             extraction,
+            rules=rules,
             telegram_key=key,
             raw_text=msg["text"],
-            posted_at=_posted_at(msg, _raw_update(msg)) or _ledger_time(msg),
+            posted_at=posted_at,
             source_block=self._source_block(msg),
-            department_aliases=aliases,
-            department_resolution=department,
-            assignee_shifts=[(s.name, s.end_of_shift) for s in people.assignee_shifts]
-            if people is not None
-            else (),
+            raise_message=raise_message.model_dump(mode="json", exclude_none=True),
         )
         if people is not None:
-            apply_resolution(plan, people=people, project=project, department=department)
+            apply_resolution(
+                plan,
+                people=people,
+                project=project,
+                department=rules.department,
+                department_findings=[
+                    PlanFinding(code=f["code"], params=f.get("params") or {})
+                    for f in rules.department_findings
+                ],
+            )
         return plan
 
     async def _match(self, msg: dict, plan: JobOrderPlan):
@@ -570,48 +607,134 @@ class Worker:
         return stage
 
     async def _create(self, msg: dict, plan: JobOrderPlan) -> None:
+        """Raise the Job Order through ``jo raise``: preview, then confirm with its token.
+
+        First ``jo find`` by chat and message ID: a Job Order raised before (including one
+        written before the switch) is adopted, never raised twice. The row stays ``writing``
+        on any failure; the next drain repeats with the same idempotency key, so nothing is
+        raised until the API answers.
+        """
         key = msg["telegram_key"]
-        payload = build_job_order_payload(
-            plan, data_source_id=self.config.job_orders_data_source_id
-        )
+        found = await self._find(msg)
+        if found:
+            await self._adopt(msg, plan, found)
+            return
+        inputs = raise_input(plan, idempotency_key(key))
         try:
-            page_ref = await self.notion.create_page(payload)  # failure -> stays `writing`
+            preview = await self.job_orders.preview_job_order(inputs)
+            drift = self._apply_preview(plan, preview)
+            if drift:
+                self.ledger.record_stage_result(key, "preview_drift", {"properties": drift})
+            jo_id = await self.job_orders.confirm_job_order(inputs, preview.token)
+        except KeyAlreadyHeld:
+            # Raised by an earlier attempt whose answer was lost: find it.
+            found = await self._find(msg)
+            if not found:
+                raise
+            await self._adopt(msg, plan, found)
+            return
         except Exception as exc:
             raise StepFailure(NOTION_WRITE, exc) from exc
-        # The id is kept while still `writing`: a later read-back failure then
-        # retries only the retrieve, never a second create.
-        self.ledger.store_page_id(key, page_ref.id)
-        await self._read_back(msg, plan, page_ref)
+        # The ID is kept while still `writing`: a retry then polls for the page and never
+        # raises a second time.
+        self.ledger.store_jo_id(key, jo_id)
+        await self._wait_for_page(msg, plan, jo_id)
+
+    async def _find(self, msg: dict) -> list[PageRef]:
+        try:
+            return await self.job_orders.find_job_orders(msg["chat_id"], msg["message_id"])
+        except Exception as exc:
+            raise StepFailure(NOTION_RECONCILIATION, exc) from exc
+
+    async def _adopt(self, msg: dict, plan: JobOrderPlan, found: list[PageRef]) -> None:
+        """Take the one Job Order already raised from this message; report (never merge) more."""
+        key = msg["telegram_key"]
+        if len(found) > 1:
+            self.ledger.record_stage_result(
+                key, "reconcile", {"duplicate_urls": [m.url for m in found]}
+            )
+        self.ledger.store_page_id(key, found[0].id)
+        await self._read_back(msg, plan, found[0])
+
+    @staticmethod
+    def _apply_preview(plan: JobOrderPlan, preview) -> list[str]:
+        """Take the write-time preview's values; return the properties that differ from the plan.
+
+        The stored plan was previewed at planning time. When the API now answers differently
+        (a rule or a Department option changed), what is written is the new answer, and the row
+        takes the read-back review path through ``readback_mismatch``.
+        """
+        if plan.raise_message is None:
+            return []
+        stored = plan.properties
+        written = {
+            "Name": preview.name or "",
+            "JO Number": preview.jo_number or "",
+            "Department": preview.department or "",
+            "Telegram Key": preview.telegram_key or plan.telegram_key,
+        }
+        was = {
+            "Name": plan.name,
+            "JO Number": "".join(
+                i["text"]["content"] for i in (stored.get("JO Number") or {}).get("rich_text", [])
+            ),
+            "Department": ((stored.get("Department") or {}).get("select") or {}).get("name", ""),
+            "Telegram Key": plan.telegram_key,
+        }
+        drift = [prop for prop in written if written[prop] != was[prop]]
+        was_deadline = ((stored.get("Deadline") or {}).get("date") or {}).get("start")
+        if (preview.deadline and datetime.fromisoformat(preview.deadline)) != (
+            was_deadline and datetime.fromisoformat(was_deadline)
+        ):
+            drift.append("Deadline")
+        if drift:
+            plan.name = written["Name"]
+            plan.telegram_key = written["Telegram Key"]
+        return drift
+
+    async def _wait_for_page(self, msg: dict, plan: JobOrderPlan, jo_id: str) -> None:
+        """Poll ``jo get`` until the raised Job Order's page exists, then read it back.
+
+        The page appears a few seconds after the confirm. Past ``raise_poll_seconds`` the row
+        stays ``writing`` with its ``jo_id`` and the retry schedule applies.
+        """
+        key = msg["telegram_key"]
+        waited = 0.0
+        while True:
+            try:
+                page_id = await self.job_orders.job_order_page(jo_id)
+            except Exception as exc:
+                raise StepFailure(NOTION_RECONCILIATION, exc) from exc
+            if page_id:
+                break
+            if waited >= self.config.raise_poll_seconds:
+                raise StepFailure(
+                    NOTION_RECONCILIATION,
+                    TimeoutError("the page of the raised Job Order is not there yet"),
+                )
+            await self.sleep(RAISE_POLL_INTERVAL)
+            waited += RAISE_POLL_INTERVAL
+        self.ledger.store_page_id(key, page_id)
+        await self._read_back(msg, plan, PageRef(id=page_id, url=page_url_for(page_id)))
 
     async def _resume_writing(self, msg: dict) -> None:
         """Recover a row left in `writing` (crash or failed attempt).
 
-        With a stored page id only the read-back is outstanding. Without one the
-        create is uncertain, so ask the t6 API by `Telegram Key`: adopt the one match,
-        create only when there is none, and report (never merge or delete) more
-        than one.
+        With a stored page id only the read-back is outstanding. With a stored Job Order ID
+        only the page is outstanding. With neither the raise is uncertain, so ``_create`` asks
+        ``jo find`` first: adopt the one match, raise only when there is none, and report
+        (never merge or delete) more than one.
         """
-        key = msg["telegram_key"]
         if not msg["plan_json"]:
             return
         plan = load_plan(msg["plan_json"])
         if msg["notion_page_id"]:
             page_id = msg["notion_page_id"]
             await self._read_back(msg, plan, PageRef(id=page_id, url=page_url_for(page_id)))
-            return
-        try:
-            matches = await self.job_orders.find_job_orders(key)
-        except Exception as exc:
-            raise StepFailure(NOTION_RECONCILIATION, exc) from exc
-        if not matches:
+        elif msg["jo_id"]:
+            await self._wait_for_page(msg, plan, msg["jo_id"])
+        else:
             await self._create(msg, plan)
-            return
-        if len(matches) > 1:
-            self.ledger.record_stage_result(
-                key, "reconcile", {"duplicate_urls": [m.url for m in matches]}
-            )
-        self.ledger.store_page_id(key, matches[0].id)
-        await self._read_back(msg, plan, matches[0])
 
     async def _read_back(self, msg: dict, plan: JobOrderPlan, page_ref: PageRef) -> None:
         key = msg["telegram_key"]
@@ -631,6 +754,8 @@ class Worker:
         # Verification annotates, never gates: findings and their report are
         # committed in the same transaction that marks the row written.
         reconcile = self.ledger.stage_result(key, "reconcile") or {}
+        drift = (self.ledger.stage_result(key, "preview_drift") or {}).get("properties", [])
+        mismatches += [f"{prop} differs: the API's rules changed since planning" for prop in drift]
         facts = self._capture_facts(msg, plan, mismatches)
         facts.duplicate_key_urls = reconcile.get("duplicate_urls", [])
         findings = verify(facts, header_date_tolerance_days=self.config.header_date_tolerance_days)
@@ -647,7 +772,9 @@ class Worker:
         )
         if mismatches:
             self.ledger.record_mismatch(key, "; ".join(mismatches))
-            log.warning("read-back mismatch for %s: %s", key, "; ".join(mismatches))
+            log.warning(
+                "read-back mismatch for %s: %s", key, ", ".join(readback_properties(mismatches))
+            )
         await self._after_written(self.ledger.get_message(key))
 
     async def _after_written(self, msg: dict) -> None:
@@ -713,19 +840,16 @@ class Worker:
 
     @staticmethod
     def _jo_key(plan: JobOrderPlan) -> tuple[str | None, str | None]:
-        """The content-duplicate key and the JO Number as posted, from the stored resolution.
+        """The content-duplicate key and the JO Number as posted, from the stored plan.
 
-        The key needs a resolved Project page and a parsed number; anything
-        less returns no key, so reuse detection skips. The Department is not
-        part of it: JO Numbers are one counter per project (#93).
+        The key is the API's (``jo raise`` preview): it needs a resolved Project and a parsed
+        number, and anything less returns no key, so reuse detection skips. The Department is
+        not part of it: JO Numbers are one counter per project (#93).
         """
-        if plan.resolution is None or plan.jo_number_int is None:
+        if plan.duplicate_key is None:
             return None, None
-        resolved = plan.resolution
-        key = jo_key(resolved.project_page_id, plan.jo_number_int)
         shown = plan.properties.get("JO Number", {}).get("rich_text", [])
-        display = "".join(item["text"]["content"] for item in shown)
-        return key, display or f"#{plan.jo_number_int}"
+        return plan.duplicate_key, "".join(item["text"]["content"] for item in shown)
 
     def _annotate_duplicate(self, msg: dict, plan: JobOrderPlan) -> str | None:
         """Look for an earlier exact re-post or reused JO Number; return the jo_key.

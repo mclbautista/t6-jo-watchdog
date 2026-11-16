@@ -1,60 +1,105 @@
-"""Pure core: exact Notion payload construction and read-back comparison."""
+"""Pure core: the ``jo raise`` fields from a stored plan, and read-back comparison."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from jo_watchdog.core.masker import mask_text
-from jo_watchdog.core.plan import BLOCK_LIMIT, WATCHDOG_NOTES_PROPERTY, Plan
 
-# The only Status the walking skeleton ever writes (job-order field mapping).
+if TYPE_CHECKING:
+    from jo_watchdog.core.job_order import JobOrderPlan
+
+# The only Status the watchdog ever writes (job-order field mapping).
 STATUS_NEEDS_INTAKE_REVIEW = "Needs Intake Review"
 
 
-def _text(content: str) -> dict:
-    return {"text": {"content": content}}
+# The live property of a stored plan -> the ``jo raise`` field that writes it.
+_TEXT_FIELDS = {
+    "Title": "title",
+    "Subtitle": "subtitle",
+    "Task": "task",
+    "Purpose": "purpose",
+    "Source / Source Drive": "source",
+    "Platform": "platform",
+    "Link Settings": "link_settings",
+    "Watermark": "watermark",
+    "Mode of Transfer": "mode_of_transfer",
+    "Blocker ": "blocker",
+    "Pending": "pending",
+    "JO Notes": "notes",
+    "Watchdog Notes": "watchdog_notes",
+}
+_RELATION_FIELDS = {"Assigned": "assigned_ids", "cc": "cc_ids", "Deliverable": "deliverable_ids"}
+# What the API builds from a message; a stored plan from before #151 sends them itself.
+RULE_FIELDS = {
+    "Name": "name",
+    "JO Number": "number",
+    "Department": "department",
+    "Deadline": "deadline",
+    "Telegram Key": "telegram_key",
+}
 
 
-def build_notion_payload(
-    plan: Plan,
-    *,
-    data_source_id: str,
-    status: str = STATUS_NEEDS_INTAKE_REVIEW,
-) -> dict:
-    """Build the exact Notion create-page payload from a stored plan.
+def _plain(prop: Mapping[str, Any] | None) -> str:
+    return "".join(
+        item["text"]["content"] for item in (prop or {}).get("rich_text") or []
+    ) or "".join(item["text"]["content"] for item in (prop or {}).get("title") or [])
 
-    The body blocks are masked here, at the exit boundary, so the masked text
-    (not the raw source) is what reaches Notion. Property names are the exact
-    live schema names (``Name``, ``Telegram Key``, ``Status``).
+
+def _start(prop: Mapping[str, Any] | None) -> str | None:
+    date = (prop or {}).get("date") or {}
+    start = date.get("start")
+    if not isinstance(start, str):
+        return None
+    if date.get("time_zone"):  # plans stored before #83 carried one; keep the instant
+        parsed = datetime.fromisoformat(start)
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(_MANILA).isoformat()
+    return start
+
+
+def build_raise_fields(plan: Any) -> dict[str, Any]:
+    """The ``fields`` of a ``jo raise`` from a stored plan (Notion-shaped properties).
+
+    A plan with a ``raise_message`` leaves the Name, number, Department, deadline and Telegram
+    Key out: the API builds them from the message. The Project goes in the message too, so the
+    Projects relation is not a field. Any other stored plan (from before #151) sends all of them
+    itself. The body is the source block and the posted text, one line per paragraph.
     """
-    children = [
-        {
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {"rich_text": [{"type": "text", **_text(mask_text(block))}]},
-        }
-        for block in plan.body_blocks
-    ]
-    properties = {
-        "Name": {"title": [_text(plan.name)]},
-        "Telegram Key": {"rich_text": [_text(plan.telegram_key)]},
-        "Status": {"status": {"name": status}},
+    properties = plan.properties
+    fields: dict[str, Any] = {
+        "status": ((properties.get("Status") or {}).get("status") or {}).get(
+            "name", STATUS_NEEDS_INTAKE_REVIEW
+        ),
     }
-    if plan.notes:
-        properties[WATCHDOG_NOTES_PROPERTY] = {
-            "rich_text": [
-                _text(plan.notes[i : i + BLOCK_LIMIT])
-                for i in range(0, len(plan.notes), BLOCK_LIMIT)
-            ]
-        }
-    return {
-        "parent": {"data_source_id": data_source_id},
-        "properties": properties,
-        "children": children,
-    }
+    if start := _start(properties.get("Date")):
+        fields["date"] = start
+    for prop, field in _TEXT_FIELDS.items():
+        if text := _plain(properties.get(prop)):
+            fields[field] = text
+    for prop, field in _RELATION_FIELDS.items():
+        if prop in properties:
+            fields[field] = [r["id"] for r in properties[prop].get("relation") or []]
+    if plan.raise_message is None:
+        projects = (properties.get("Projects") or {}).get("relation") or []
+        if projects:
+            fields["project_id"] = projects[0]["id"]
+        for prop, field in RULE_FIELDS.items():
+            if prop == "Deadline":
+                value = _start(properties.get(prop))
+            elif prop == "Department":
+                value = ((properties.get(prop) or {}).get("select") or {}).get("name")
+            else:
+                value = _plain(properties.get(prop))
+            if value:
+                fields[field] = value
+    body = "\n".join(mask_text(block) for block in plan.body_blocks)
+    if body:
+        fields["source_text"] = body
+    return fields
 
 
 def page_url_for(page_id: str) -> str:
@@ -96,7 +141,7 @@ def _date_mismatch(name: str, planned: dict | None, read: dict | None) -> str | 
 
 
 def verify_readback(
-    plan: Plan,
+    plan: JobOrderPlan,
     *,
     retrieved_name: str,
     retrieved_telegram_key: str,

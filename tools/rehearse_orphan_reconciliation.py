@@ -84,9 +84,11 @@ def main():
         after = snapshot(conn)
         assert conn.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
         assert not conn.execute('PRAGMA foreign_key_check').fetchall()
-    assert max(r['version'] for r in after['schema_version']) == 11
+    assert max(r['version'] for r in after['schema_version']) == 12
     for table in before:
-        if table not in ('schema_version', 'outbox', 'llm_calls'):
+        if table == 'messages':  # migration 12 adds the nullable jo_id (#134)
+            assert after[table] == [{**r, 'jo_id': None} for r in before[table]]
+        elif table not in ('schema_version', 'outbox', 'llm_calls'):
             assert after[table] == before[table]
     assert after['llm_calls'] == reconciled['llm_calls']
     assert len(after['outbox']) == len(before['outbox'])

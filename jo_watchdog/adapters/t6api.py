@@ -1,4 +1,4 @@
-"""The watchdog's seam over the t6 API: directory reads, matching and Job Order read-back.
+"""The watchdog's seam over the t6 API: directory reads, matching and Job Orders.
 
 ``t6.client.Client`` is synchronous (urllib, 10 s default timeout) and the worker is
 asyncio, so every call runs in a worker thread: a slow or hung API call never stalls
@@ -28,16 +28,20 @@ from t6.verbs import (
     Done,
     JoFindInput,
     JoGetInput,
+    JoRaiseInput,
+    JoRaiseMessage,
     PersonFindInput,
     PersonListInput,
+    Preview,
     ProjectListInput,
     ProjectResolveInput,
     Refused,
 )
 
 from jo_watchdog.adapters.protocols import PageRef
+from jo_watchdog.core.job_order import JobOrderPlan, RaisePreview
 from jo_watchdog.core.matching import Candidate
-from jo_watchdog.core.payload import page_url_for
+from jo_watchdog.core.payload import build_raise_fields, page_url_for
 from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
 
 CALL_TIMEOUT_SECONDS = 30.0
@@ -51,14 +55,20 @@ class T6ApiError(Exception):
     """A t6 API call failed: transport down, refused, an HTTP error, or no answer in time."""
 
 
+class KeyAlreadyHeld(T6ApiError):
+    """``jo raise`` refused: a Job Order with this Telegram Key was already raised."""
+
+
 class T6Api:
-    """Async reads over a sync ``t6.client.Client``."""
+    """Async calls over a sync ``t6.client.Client``."""
 
     def __init__(self, client: Client, *, call_timeout: float = CALL_TIMEOUT_SECONDS):
         self._client = client
         self._call_timeout = call_timeout
 
-    async def _call(self, method: Callable[[Any], Any], inputs: Any) -> Any:
+    async def _call(
+        self, method: Callable[[Any], Any], inputs: Any, *, expect: type = Done
+    ) -> Any:
         try:
             outcome = await asyncio.wait_for(
                 asyncio.to_thread(method, inputs), timeout=self._call_timeout
@@ -70,10 +80,13 @@ class T6Api:
         if isinstance(outcome, Unavailable):
             raise T6ApiError(f"t6 API unavailable: {outcome.reason}")
         if isinstance(outcome, Refused):
+            if outcome.rule == "telegram_key":
+                raise KeyAlreadyHeld(f"t6 API refused ({outcome.rule}): {outcome.reason}")
             raise T6ApiError(f"t6 API refused ({outcome.rule}): {outcome.reason}")
-        if not isinstance(outcome, Done):
-            raise T6ApiError(f"t6 API answered {outcome.outcome}, want done")
-        return outcome.result
+        if not isinstance(outcome, expect):
+            want = expect.model_fields["outcome"].default
+            raise T6ApiError(f"t6 API answered {outcome.outcome}, want {want}")
+        return outcome.result if isinstance(outcome, Done) else outcome
 
     # -- directory (the six-hour caches) ---------------------------------------------
 
@@ -137,19 +150,76 @@ class T6Api:
             candidates.append(Candidate(page_id=item["page_id"], name=name))
         return candidates
 
-    # -- Job Orders (recovery and read-back) -----------------------------------------
+    # -- Job Orders (raise, recovery and read-back) ------------------------------------
 
-    async def find_job_orders(self, telegram_key: str) -> list[PageRef]:
-        """``jo find``: Job Orders with this Telegram Key, oldest first."""
-        result = await self._call(self._client.jo_find, JoFindInput(telegram_key=telegram_key))
+    async def preview_job_order(self, inputs: JoRaiseInput) -> RaisePreview:
+        """``jo raise`` without a confirm: what the API would write, and the token to confirm.
+
+        With a ``message`` the API builds the Name, number, Department, deadline and both
+        keys; they come back here. Nothing is written.
+        """
+        preview = await self._call(self._client.jo_raise, inputs, expect=Preview)
+        plan = preview.plan
+        return RaisePreview(
+            token=preview.token,
+            name=plan.get("name"),
+            jo_number=plan.get("jo_number"),
+            department=plan.get("department"),
+            deadline=plan.get("deadline"),
+            deadline_source=plan.get("deadline_source") or "blank",
+            deadline_findings=plan.get("deadline_findings") or [],
+            department_findings=plan.get("department_findings") or [],
+            telegram_key=plan.get("telegram_key"),
+            duplicate_key=plan.get("duplicate_key"),
+        )
+
+    async def confirm_job_order(self, inputs: JoRaiseInput, token: str) -> str:
+        """``jo raise`` with the preview's token and the same key: the T6 Job Order ID.
+
+        The reply has no page ID; the page appears a few seconds later (``job_order_page``).
+        """
+        result = await self._call(
+            self._client.jo_raise, inputs.model_copy(update={"confirm": token})
+        )
+        return result["jo_id"]
+
+    async def job_order_page(self, jo_id: str) -> str | None:
+        """``jo get`` by T6 Job Order ID: the page ID once the page exists, else None."""
+        result = await self._call(self._client.jo_get, JoGetInput(ref=jo_id))
+        return result["job_order"].get("page_id") or None
+
+    async def find_job_orders(self, chat_id: int, message_id: int) -> list[PageRef]:
+        """``jo find`` by chat and message ID: Job Orders raised from this message, oldest first."""
+        result = await self._call(
+            self._client.jo_find, JoFindInput(chat_id=str(chat_id), message_id=str(message_id))
+        )
         return [
             PageRef(id=order["page_id"], url=page_url_for(order["page_id"]))
             for order in result["job_orders"]
+            if order.get("page_id")
         ]
 
     async def read_job_order(self, page_id: str) -> dict[str, Any]:
         """``jo get`` by page ID: the ``job_order`` dict (name, telegram_key, date, deadline)."""
         return (await self._call(self._client.jo_get, JoGetInput(ref=page_id)))["job_order"]
+
+
+def raise_input(plan: JobOrderPlan, idempotency_key: str) -> JoRaiseInput:
+    """The ``jo raise`` input for a stored plan.
+
+    A plan with a ``raise_message`` sends it, so the API builds the rule fields; any other
+    plan (stored before #151) sends its own fields. With no Project, ``no_project`` is set:
+    nothing picks one.
+    """
+    fields = build_raise_fields(plan)
+    message = JoRaiseMessage.model_validate(plan.raise_message) if plan.raise_message else None
+    project = message.project if message else fields.get("project_id")
+    return JoRaiseInput(
+        message=message,
+        fields=fields,
+        no_project=not project,
+        idempotency_key=idempotency_key,
+    )
 
 
 def _contact_match(reply: dict[str, Any]) -> ContactMatch:
@@ -161,6 +231,7 @@ def _contact_match(reply: dict[str, Any]) -> ContactMatch:
             method=reply.get("method"),
             page_id=match["page_id"],
             name=match.get("name") or "",
+            t6_id=match.get("t6_id"),
         )
     if reply.get("needs_review") and reply.get("candidates"):
         return ContactMatch(status="ambiguous")

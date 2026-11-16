@@ -31,8 +31,8 @@ from jo_watchdog.ledger.db import Ledger
 from tests.clockwork import KEY, Crash, Pipeline
 from tests.fakes import (
     FakeClassifier,
+    FakeJobOrders,
     FakeMatcher,
-    FakeNotion,
     FakeTelegram,
     ok_result,
     project,
@@ -71,7 +71,13 @@ READS = frozenset(
 )
 ADAPTER_CALLS = {
     "telegram": ("get_updates", "set_reaction", "send_message"),
-    "notion": ("create_page", "retrieve_page", "find_pages_by_telegram_key"),
+    "notion": (
+        "preview_job_order",
+        "confirm_job_order",
+        "job_order_page",
+        "find_job_orders",
+        "read_job_order",
+    ),
     "classifier": ("classify",),
     "matcher": ("match",),
     "deliverables": ("deliverable_candidates",),
@@ -164,7 +170,7 @@ def make_pipeline(test) -> Pipeline:
     return Pipeline(
         test,
         telegram=ReplayTelegram([forwarded_jo()]),
-        notion=FakeNotion(),
+        notion=FakeJobOrders(),
         classifier=FakeClassifier(ok_result(title="Teaser", task="Edit the teaser")),
     )
 
@@ -223,6 +229,7 @@ class CrashInjectionTests(unittest.IsolatedAsyncioTestCase):
             "ledger.plan_message",
             "ledger.transition",
             "ledger.mark_writing",
+            "ledger.store_jo_id",
             "ledger.store_page_id",
             "ledger.mark_written",
             "ledger.set_reaction_state",
@@ -232,8 +239,11 @@ class CrashInjectionTests(unittest.IsolatedAsyncioTestCase):
             "telegram.set_reaction",
             "telegram.send_message",
             "classifier.classify",
-            "notion.create_page",
-            "notion.retrieve_page",
+            "notion.find_job_orders",
+            "notion.preview_job_order",
+            "notion.confirm_job_order",
+            "notion.job_order_page",
+            "notion.read_job_order",
         ):
             self.assertIn(label, counts)
 
@@ -304,15 +314,16 @@ class CrashInjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(pipeline.notion.created), 1)
         self.assertEqual(len(pipeline.classifier.calls), 1)  # never re-extracted
 
-    async def test_a_crash_between_create_and_page_id_never_double_writes(self):
+    async def test_a_crash_between_the_raise_and_the_job_order_id_never_double_writes(self):
         pipeline = make_pipeline(self)
-        seams = Seams(crash_at=("notion.create_page", 1, "after"))
+        seams = Seams(crash_at=("notion.confirm_job_order", 1, "after"))
         self.assertTrue(await run_until_crash(pipeline, seams))
         self.assertEqual(len(pipeline.notion.pages), 1)
         self.assertIsNone(peek(pipeline)["notion_page_id"])
         await recover(pipeline, seams)
+        # Recovery finds the page by chat and message ID and adopts it: never a second raise.
         self.assertEqual(pipeline.notion.create_calls, 1)
-        self.assertEqual(pipeline.notion.find_calls, 1)
+        self.assertEqual(pipeline.notion.find_calls, 2)  # before the raise, and on recovery
         self.assertEqual(pipeline.message()["notion_page_id"], "page-1")
 
     async def test_a_dead_reaction_never_blocks_the_report_or_the_capture(self):
@@ -389,7 +400,7 @@ class JevPipeline(Pipeline):
         super().__init__(
             test,
             telegram=ReplayTelegram([forwarded_jo()]),
-            notion=FakeNotion(),
+            notion=FakeJobOrders(),
             classifier=FakeClassifier(ok_result(title="Teaser", task="Edit the teaser")),
             deliverable_link_enabled=True,
         )
@@ -440,9 +451,9 @@ JEV_SEAMS = {
     "matcher.match",
     "ledger.plan_message",
     "ledger.mark_writing",
-    "notion.create_page",
+    "notion.confirm_job_order",
     "ledger.store_page_id",
-    "notion.retrieve_page",
+    "notion.read_job_order",
     "ledger.mark_written",
     "telegram.set_reaction",
     "ledger.set_reaction_state",
@@ -453,8 +464,8 @@ JEV_SEAMS = {
     "ledger.accept_message",
 }
 RECONCILIATION_SEAMS = {
-    "notion.find_pages_by_telegram_key",
-    "notion.retrieve_page",
+    "notion.find_job_orders",
+    "notion.read_job_order",
     "ledger.store_page_id",
     "ledger.mark_written",
     "telegram.set_reaction",
@@ -603,8 +614,8 @@ class JevCrashInjectionTests(unittest.IsolatedAsyncioTestCase):
         clean, _ = await self.clean("matcher_ok")
         reference = self.reference(clean)
         first_crashes = {
-            "create_landed_without_page_id": ("notion.create_page", 1, "after"),
-            "create_never_sent": ("notion.create_page", 1, "before"),
+            "create_landed_without_page_id": ("notion.confirm_job_order", 1, "after"),
+            "create_never_sent": ("notion.confirm_job_order", 1, "before"),
             "writing_marked_create_not_started": ("ledger.mark_writing", 1, "after"),
         }
         for label, first in first_crashes.items():
@@ -614,9 +625,9 @@ class JevCrashInjectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await run_until_crash(probe, seams))
             self.assertFalse(await recover(probe, seams))
             recovery_counts = dict(seams.counts)
-            self.assertIn("notion.find_pages_by_telegram_key", recovery_counts, label)
+            self.assertIn("notion.find_job_orders", recovery_counts, label)
             self.assertLessEqual(
-                RECONCILIATION_SEAMS & {"notion.find_pages_by_telegram_key"}, set(recovery_counts)
+                RECONCILIATION_SEAMS & {"notion.find_job_orders"}, set(recovery_counts)
             )
             for point in self.points(recovery_counts):
                 with self.subTest(first=label, second=point):
@@ -630,22 +641,22 @@ class JevCrashInjectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_reconciliation_adopts_the_row_a_landed_create_left_behind(self):
         pipeline = self.build("matcher_ok")
-        seams = Seams(crash_at=("notion.create_page", 1, "after"))
+        seams = Seams(crash_at=("notion.confirm_job_order", 1, "after"))
         self.assertTrue(await run_until_crash(pipeline, seams))
         self.assertEqual(peek(pipeline)["state"], "writing")
         self.assertIsNone(peek(pipeline)["notion_page_id"])
         self.assertFalse(await recover(pipeline, seams))
-        self.assertEqual(pipeline.notion.find_calls, 1)
+        self.assertEqual(pipeline.notion.find_calls, 2)  # before the raise, and on recovery
         self.assertEqual(pipeline.notion.create_calls, 1)
         self.assertEqual(pipeline.message()["notion_page_id"], "page-1")
 
     async def test_a_failed_reconciliation_query_retries_and_never_creates_a_second_row(self):
         pipeline = self.build("matcher_ok")
-        seams = Seams(crash_at=("notion.create_page", 1, "after"))
+        seams = Seams(crash_at=("notion.confirm_job_order", 1, "after"))
         self.assertTrue(await run_until_crash(pipeline, seams))
         pipeline.notion.fail_find = 2
         self.assertFalse(await recover(pipeline, seams, cycles=12))
-        self.assertEqual(pipeline.notion.find_calls, 3)
+        self.assertEqual(pipeline.notion.find_calls, 4)  # before the raise, two failures, adopt
         self.assertEqual(pipeline.notion.create_calls, 1)
         self.assertEqual(len(pipeline.notion.pages), 1)
         self.assertEqual(pipeline.message()["state"], "done")

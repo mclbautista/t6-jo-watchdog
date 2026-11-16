@@ -80,14 +80,16 @@ def test_preserve_apply_rerun_and_upgrade(tmp_path, gateway):
     assert batch['reason'] == 'approved unrecoverable'
     assert batch['applied_at']
     upgraded = Ledger(path, gateway_mode=gateway)
-    assert conn.execute('SELECT max(version) FROM schema_version').fetchone()[0] == 11
+    assert conn.execute('SELECT max(version) FROM schema_version').fetchone()[0] == 12
     assert conn.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
     assert not conn.execute('PRAGMA foreign_key_check').fetchall()
     outbox = conn.execute('SELECT * FROM outbox').fetchone()
     assert outbox['telegram_message_id'] == (None if gateway else 42)
     assert outbox['gateway_ref'] == (42 if gateway else None)
     for table, expected in other.items():
-        assert [tuple(r) for r in conn.execute(f'SELECT * FROM {table}')] == expected
+        added = (None,) if table == 'messages' else ()  # migration 12 adds jo_id (#134)
+        assert [tuple(r) for r in conn.execute(f'SELECT * FROM {table}')] == [
+            row + added for row in expected]
     assert apply(path, manifest, operator='other', reason='rerun') == {
         'detached': 0, 'already_applied': 1}
     assert conn.execute('SELECT count(*) FROM call_reconciliation_evidence').fetchone()[0] == 1
@@ -110,7 +112,7 @@ def test_unbroken_deployed_controls_upgrade(tmp_path, gateway, parent):
     before = list(conn.execute('SELECT * FROM llm_calls'))
     Ledger(path, gateway_mode=gateway).close()
     assert list(conn.execute('SELECT * FROM llm_calls')) == before
-    assert conn.execute('SELECT max(version) FROM schema_version').fetchone()[0] == 11
+    assert conn.execute('SELECT max(version) FROM schema_version').fetchone()[0] == 12
     assert not conn.execute('PRAGMA foreign_key_check').fetchall()
     conn.close()
 

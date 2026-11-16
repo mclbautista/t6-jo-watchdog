@@ -1,27 +1,26 @@
 from jo_watchdog.core.plan import NOTES_PROPERTY
-"""The deterministic Job Order plan: Name, JO Number, fields, Notes, and replay."""
+
+"""The Job Order plan: the API's Name, number and deadline, fields, Notes, and replay."""
 
 import json
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
 
-from jo_watchdog.core.deadline import MANILA
-from jo_watchdog.core.header import canonical_name, parse_header
 from jo_watchdog.core.job_order import (
     ASAP_NOTE,
     LEGACY_WATCHDOG_MARKER,
+    MANILA,
     JobOrderPlan,
-    build_job_order_payload,
+    RaisePreview,
     build_notes,
     build_watchdog_notes,
     load_plan,
     plan_job_order,
     rich_text,
 )
-from jo_watchdog.core.resolve import resolve_department
+from jo_watchdog.core.payload import build_raise_fields
 
-ALIASES = {"TO": "TOC"}
 POSTED = datetime(2026, 9, 15, 10, 0, tzinfo=MANILA)
 WITHHELD = "[password withheld – see Telegram message]"
 
@@ -36,8 +35,21 @@ def extraction(**values):
     return SimpleNamespace(**{name: values.get(name) for name in FIELDS})
 
 
-def plan(ext, raw_text="SOMSOM - TOC - #0155\nbody", **kwargs):
-    kwargs.setdefault("department_aliases", ALIASES)
+def rules(**values):
+    """What ``jo raise`` previews for a message (the API builds these, the plan takes them)."""
+    base = dict(
+        token="t",
+        name="MFG - TOC - JO #74",
+        jo_number="#74",
+        department="TOC",
+        telegram_key="-1001:42",
+        duplicate_key="proj|74",
+    )
+    return RaisePreview(**{**base, **values})
+
+
+def plan(ext, raw_text="MFG - TOC - JO #74\nbody", **kwargs):
+    kwargs.setdefault("rules", rules())
     return plan_job_order(
         ext,
         telegram_key="-1001:42",
@@ -52,91 +64,37 @@ def text_of(prop):
     return "".join(item["text"]["content"] for item in prop["rich_text"])
 
 
-class NameTests(unittest.TestCase):
-    def test_canonical_name_keeps_leading_zeros(self):
-        p = plan(extraction(header_raw="SOMSOM - TOC - #0155"))
+class RuleValuesTests(unittest.TestCase):
+    def test_the_apis_name_number_department_and_keys_are_the_plans(self):
+        p = plan(
+            extraction(),
+            rules=rules(name="SOMSOM - TOC - JO #0155", jo_number="#0155", duplicate_key="p|155"),
+        )
         self.assertEqual(p.name, "SOMSOM - TOC - JO #0155")
         self.assertEqual(text_of(p.properties["JO Number"]), "#0155")
-        self.assertEqual(p.jo_number_int, 155)
         self.assertEqual(p.properties["Department"], {"select": {"name": "TOC"}})
+        self.assertEqual(p.duplicate_key, "p|155")
 
-    def test_department_alias_is_applied(self):
-        p = plan(extraction(header_raw="ALTA-TO-JO04"), raw_text="ALTA-TO-JO04")
-        self.assertEqual(p.name, "ALTA - TOC - JO #04")
-
-    def test_aliases_come_from_configuration(self):
+    def test_the_plan_applies_no_rule_of_its_own_to_the_header(self):
+        # The posted text and the extraction say one thing, the API another: the API wins.
         p = plan(
-            extraction(header_raw="ALTA-TO-JO04"),
+            extraction(header_raw="ALTA-TO-JO04", jo_number_raw="#9", department_raw="OE"),
             raw_text="ALTA-TO-JO04",
-            department_aliases={"TO": "OE"},
+            rules=rules(name="ALTA - TOC - JO #04", jo_number="#04"),
         )
-        self.assertEqual(p.name, "ALTA - OE - JO #04")
+        self.assertEqual(p.name, "ALTA - TOC - JO #04")
+        self.assertEqual(text_of(p.properties["JO Number"]), "#04")
 
-    def test_leading_tag_line_is_not_the_header(self):
-        raw = "[ADVANCED]\nSH1 - TOC - #0034\nbody"
-        p = plan(extraction(header_raw="SH1 - TOC - #0034", jo_number_raw="#0034"), raw_text=raw)
-        self.assertEqual(p.name, "SH1 - TOC - JO #0034")
-        self.assertEqual(text_of(p.properties["JO Number"]), "#0034")
-
-    def test_escaped_tag_line_is_skipped(self):
-        raw = "\\[ADVANCED\\]\nPTG - TOC - #047\nbody"
-        self.assertEqual(plan(extraction(), raw_text=raw).name, "PTG - TOC - JO #047")
-
-    def test_unparsed_header_falls_back_to_first_line(self):
-        p = plan(
-            extraction(header_raw="TOC - Job Order", department_raw="TOC", jo_number_raw="#12"),
-            raw_text="TOC - Job Order\nbody",
-        )
-        self.assertEqual(p.name, "TOC - Job Order")
-        self.assertEqual(text_of(p.properties["JO Number"]), "#12")
-        self.assertEqual(p.jo_number_int, 12)
-        self.assertEqual(p.properties["Department"], {"select": {"name": "TOC"}})
-
-    def test_header_defaults_to_first_line_of_text(self):
-        p = plan(extraction(), raw_text="\n\nMFG - TOC - JO #74\nbody")
-        self.assertEqual(p.name, "MFG - TOC - JO #74")
-
-    def test_invalid_department_blanks_department_and_falls_back(self):
-        p = plan(
-            extraction(header_raw="MFG - XYZ - JO #74"),
-            raw_text="MFG - XYZ - JO #74",
-            department_resolution=resolve_department("XYZ", ["TOC", "AE"], ALIASES),
-        )
-        self.assertEqual(p.name, "MFG - XYZ - JO #74")
-        self.assertNotIn("Department", p.properties)
-        self.assertEqual(text_of(p.properties["JO Number"]), "#74")
-
-    def test_validated_department_keeps_canonical_name(self):
-        p = plan(
-            extraction(header_raw="MFG - toc - JO #74"),
-            raw_text="MFG - toc - JO #74",
-            department_resolution=resolve_department("toc", ["TOC"], ALIASES),
-        )
-        self.assertEqual(p.name, "MFG - TOC - JO #74")
-
-    def test_live_option_spelling_is_authoritative(self):
-        p = plan(
-            extraction(header_raw="MFG - TO - JO #74"),
-            raw_text="MFG - TO - JO #74",
-            department_resolution=resolve_department("TO", [" toc "], ALIASES),
-        )
-        self.assertEqual(p.name, "MFG -  toc  - JO #74")
-        self.assertEqual(p.properties["Department"], {"select": {"name": " toc "}})
-
-    def test_fallback_name_is_masked(self):
-        p = plan(extraction(header_raw="pw: hunter2"), raw_text="pw: hunter2")
-        self.assertEqual(p.name, f"pw: {WITHHELD}")
-        self.assertNotIn("hunter2", p.model_dump_json())
-
-    def test_no_number_means_no_jo_number(self):
-        p = plan(extraction(header_raw="JOB ORDER"), raw_text="JOB ORDER")
+    def test_no_department_and_no_number_write_neither(self):
+        p = plan(extraction(), rules=rules(name="JOB ORDER", jo_number=None, department=None))
+        self.assertEqual(p.name, "JOB ORDER")
         self.assertNotIn("JO Number", p.properties)
-        self.assertIsNone(p.jo_number_int)
+        self.assertNotIn("Department", p.properties)
 
-    def test_canonical_name_without_header(self):
-        self.assertEqual(canonical_name(None, "first line"), "first line")
-        header = parse_header("MFG - TOC - JO #74", {})
-        self.assertEqual(canonical_name(header, "x"), "MFG - TOC - JO #74")
+    def test_a_message_plan_keeps_its_raise_message(self):
+        p = plan(extraction(), raise_message={"header_text": "x"})
+        self.assertEqual(p.raise_message, {"header_text": "x"})
+        self.assertIsNone(plan(extraction()).raise_message)
 
 
 class FieldTests(unittest.TestCase):
@@ -221,6 +179,7 @@ class FieldTests(unittest.TestCase):
         poster = " " + "x" * 2500 + "\n"
         p = plan(
             extraction(header_raw="MFG - TOC - JO #74", notes=poster, deadline_raw="ASAP"),
+            rules=rules(deadline_findings=[{"code": "asap"}]),
         )
         for column in (NOTES_PROPERTY, "Watchdog Notes"):
             items = p.properties[column]["rich_text"]
@@ -232,7 +191,10 @@ class FieldTests(unittest.TestCase):
         )
 
     def test_notes_column_never_carries_watchdog_text(self):
-        p = plan(extraction(header_raw="MFG - TOC - JO #74", deadline_raw="ASAP"))
+        p = plan(
+            extraction(header_raw="MFG - TOC - JO #74", deadline_raw="ASAP"),
+            rules=rules(deadline_findings=[{"code": "asap"}]),
+        )
         self.assertNotIn(NOTES_PROPERTY, p.properties)
         self.assertEqual(
             text_of(p.properties["Watchdog Notes"]),
@@ -312,33 +274,26 @@ class FieldTests(unittest.TestCase):
             text_of(loaded.properties["Watchdog Notes"]), "Earlier row: u (exact re-post)"
         )
 
-    def test_name_ignores_inconsistent_extracted_header(self):
+    def test_deadline_property_source_and_findings_are_the_apis(self):
         p = plan(
-            extraction(header_raw="Other header"),
-            raw_text="\n  Actual posted first line \nbody",
+            extraction(deadline_raw="September 16, 2am"),
+            rules=rules(
+                deadline="2026-09-16T02:00:00+08:00",
+                deadline_source="stated",
+                deadline_findings=[{"code": "deadline_past", "params": {"days": 3}}],
+            ),
         )
-        self.assertEqual(p.name, "Actual posted first line")
-        p = plan(
-            extraction(header_raw="Other header"),
-            raw_text="MFG - TOC - JO #74\nbody",
-        )
-        self.assertEqual(p.name, "MFG - TOC - JO #74")
-
-    def test_deadline_property_and_source(self):
-        p = plan(extraction(header_raw="MFG - TOC - JO #74", deadline_raw="September 16, 2am"))
         self.assertEqual(
             p.properties["Deadline"],
             {"date": {"start": "2026-09-16T02:00:00+08:00"}},
         )
         self.assertEqual(p.deadline_source, "stated")
+        self.assertEqual([(f.code, f.params) for f in p.findings], [("deadline_past", {"days": 3})])
 
-    def test_shift_values_flow_through(self):
-        p = plan(
-            extraction(header_raw="MFG - TOC - JO #74", deadline_raw="end of shift"),
-            assignee_shifts=[("Paul", "5:00 AM")],
-        )
-        self.assertEqual(p.properties["Deadline"]["date"]["start"], "2026-09-16T05:00:00+08:00")
-        self.assertEqual(p.deadline_source, "shift")
+    def test_no_deadline_from_the_api_writes_none(self):
+        p = plan(extraction(deadline_raw="whenever"), rules=rules(deadline_source="blank"))
+        self.assertNotIn("Deadline", p.properties)
+        self.assertEqual(p.deadline_source, "blank")
 
     def test_body_is_source_block_then_masked_raw_text(self):
         p = plan(extraction(), raw_text="MFG - TOC - JO #74\nPW: secret")
@@ -384,7 +339,14 @@ class NotesTests(unittest.TestCase):
                 header_raw="SOY - AE - JOB ORDER 25",
                 deadline_raw="September 10, asap",
                 notes="pls prioritize",
-            )
+            ),
+            rules=rules(
+                deadline_findings=[
+                    {"code": "asap"},
+                    {"code": "shift_fallback"},
+                    {"code": "deadline_past"},
+                ]
+            ),
         )
         self.assertEqual(text_of(p.properties[NOTES_PROPERTY]), "pls prioritize")
         self.assertEqual(
@@ -394,7 +356,10 @@ class NotesTests(unittest.TestCase):
         self.assertEqual([f.code for f in p.findings], ["asap", "shift_fallback", "deadline_past"])
 
     def test_unparsed_deadline_is_kept_in_watchdog_notes(self):
-        p = plan(extraction(deadline_raw="kung kelan matapos yung render"))
+        p = plan(
+            extraction(deadline_raw="kung kelan matapos yung render"),
+            rules=rules(deadline_findings=[{"code": "deadline_unparsed"}]),
+        )
         self.assertNotIn("Deadline", p.properties)
         self.assertIn(
             "Deadline as posted: kung kelan matapos yung render",
@@ -409,30 +374,22 @@ class NotesTests(unittest.TestCase):
 
 
 class ReplayTests(unittest.TestCase):
-    def test_stored_plan_replays_to_identical_payload(self):
+    def test_stored_plan_replays_to_identical_fields(self):
         p = plan(
-            extraction(
-                header_raw="MFG - TOC - JO #74",
-                deadline_raw="within shift",
-                notes="note",
-                title="T",
-            ),
-            assignee_shifts=[("Lena", "7:00 PM")],
+            extraction(deadline_raw="within shift", notes="note", title="T"),
+            rules=rules(deadline="2026-09-15T19:00:00+08:00", deadline_source="shift"),
+            raise_message={"header_text": "MFG - TOC - JO #74"},
         )
-        payload = build_job_order_payload(p, data_source_id="ds-1")
-        stored = json.loads(p.model_dump_json())
-        replayed = JobOrderPlan.model_validate(stored)
+        fields = build_raise_fields(p)
+        replayed = JobOrderPlan.model_validate(json.loads(p.model_dump_json()))
         self.assertEqual(replayed, p)
-        self.assertEqual(build_job_order_payload(replayed, data_source_id="ds-1"), payload)
+        self.assertEqual(build_raise_fields(replayed), fields)
 
-    def test_payload_shape(self):
-        p = plan(extraction(header_raw="MFG - TOC - JO #74"))
-        payload = build_job_order_payload(p, data_source_id="ds-1")
-        self.assertEqual(payload["parent"], {"data_source_id": "ds-1"})
-        self.assertEqual(payload["properties"], p.properties)
+    def test_fields_carry_the_body_one_line_each(self):
+        p = plan(extraction(), raise_message={})
         self.assertEqual(
-            [c["paragraph"]["rich_text"][0]["text"]["content"] for c in payload["children"]],
-            p.body_blocks,
+            build_raise_fields(p)["source_text"],
+            "Posted by: Priya (@priya)\nMFG - TOC - JO #74\nbody",
         )
 
 
@@ -442,8 +399,6 @@ if __name__ == "__main__":
 
 class LoadPlanTests(unittest.TestCase):
     def test_a_skeleton_plan_is_upgraded_to_a_replayable_one(self):
-        from jo_watchdog.core.job_order import build_job_order_payload, load_plan
-
         legacy = {
             "name": "First line",
             "telegram_key": "-100:1",
@@ -452,14 +407,10 @@ class LoadPlanTests(unittest.TestCase):
             "duplicate": {"code": "exact_repost"},
         }
         plan = load_plan(legacy)
-        payload = build_job_order_payload(plan, data_source_id="ds")
-        self.assertEqual(
-            payload["properties"]["Status"], {"status": {"name": "Needs Intake Review"}}
-        )
-        self.assertEqual(payload["properties"]["Name"]["title"][0]["text"]["content"], "First line")
-        self.assertNotIn(NOTES_PROPERTY, payload["properties"])
-        self.assertEqual(
-            payload["properties"]["Watchdog Notes"]["rich_text"][0]["text"]["content"],
-            "Earlier row: x",
-        )
+        fields = build_raise_fields(plan)
+        self.assertEqual(fields["status"], "Needs Intake Review")
+        self.assertEqual(fields["name"], "First line")
+        self.assertEqual(fields["telegram_key"], "-100:1")
+        self.assertNotIn("notes", fields)
+        self.assertEqual(fields["watchdog_notes"], "Earlier row: x")
         self.assertEqual(plan.duplicate, {"code": "exact_repost"})

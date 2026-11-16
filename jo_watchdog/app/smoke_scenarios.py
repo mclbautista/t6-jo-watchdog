@@ -23,13 +23,14 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 from jo_watchdog.adapters.jev import MatcherError
-from jo_watchdog.adapters.protocols import ClassifyResult, IncomingUpdate, PageRef
+from jo_watchdog.adapters.protocols import ClassifyResult, IncomingUpdate
 from jo_watchdog.app.caches import CacheManager
 from jo_watchdog.app.config import Config
 from jo_watchdog.app.smoke_gate import FAIL, PASS, Result
 from jo_watchdog.app.wiring import Adapters, build_worker, missing_wiring
 from jo_watchdog.core.extraction import EXTRACTED_FIELDS, PROMPT_TAG, Extraction
 from jo_watchdog.core.heartbeat import heartbeat_window
+from jo_watchdog.core.job_order import RaisePreview
 from jo_watchdog.core.masker import outbound_text
 from jo_watchdog.core.matching import Candidate, CandidateDecision, MatchResult
 from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
@@ -106,41 +107,61 @@ class ScriptedTelegram:
 
 
 class ScriptedNotion:
-    """Echoes the written Name and Telegram Key back (write and API read); can read a wrong one."""
+    """A scripted t6 API for Job Orders: raise (preview, confirm), ``jo get`` and ``jo find``.
+
+    It echoes the Name and Telegram Key of what was raised; ``wrong_name`` reads a wrong Name.
+    ``created`` holds the Notion-shaped properties of each Job Order raised.
+    """
 
     def __init__(self, *, wrong_name: bool = False):
         self.wrong_name = wrong_name
         self.created: list[dict] = []
         self.retrieved: list[str] = []
         self.pages: dict[str, dict] = {}
+        self.raised: dict[str, str] = {}
 
-    async def create_page(self, payload: dict) -> PageRef:
-        page_id = f"page-{len(self.created) + 1}"
-        props = payload["properties"]
-        name = "WRONG NAME" if self.wrong_name else props["Name"]["title"][0]["text"]["content"]
-        key = props["Telegram Key"]["rich_text"][0]["text"]["content"]
-        self.pages[page_id] = {
-            "id": page_id,
-            "url": f"https://notion.example/{page_id}",
-            "properties": {
-                "Name": {"title": [{"plain_text": name}]},
-                "Telegram Key": {"rich_text": [{"plain_text": key}]},
-            },
+    @staticmethod
+    def _rules(inputs) -> dict:
+        message = inputs.message
+        if message is None:
+            f = inputs.fields
+            return {"name": f.get("name"), "telegram_key": f.get("telegram_key")}
+        return {
+            "name": message.header_text.strip(),
+            "telegram_key": f"{message.chat_id}:{message.message_id}",
         }
-        self.created.append(payload)
-        return PageRef(id=page_id, url=f"https://notion.example/{page_id}")
+
+    async def preview_job_order(self, inputs) -> RaisePreview:
+        return RaisePreview(token="smoke-token", **self._rules(inputs))
+
+    async def confirm_job_order(self, inputs, token: str) -> str:
+        key = inputs.idempotency_key
+        if key not in self.raised:
+            rules = self._rules(inputs)
+            number = len(self.created) + 1
+            self.raised[key] = f"t6j_{number}"
+            props = {"Name": {"title": [{"text": {"content": rules["name"]}}]}}
+            ids = (inputs.fields or {}).get("deliverable_ids")
+            if ids:
+                props["Deliverable"] = {"relation": [{"id": i} for i in ids]}
+            self.created.append({"properties": props})
+            self.pages[f"page-{number}"] = {
+                "jo_id": self.raised[key],
+                "name": "WRONG NAME" if self.wrong_name else rules["name"],
+                "telegram_key": rules["telegram_key"],
+            }
+        return self.raised[key]
+
+    async def job_order_page(self, jo_id: str):
+        return next((k for k, p in self.pages.items() if p["jo_id"] == jo_id), None)
 
     async def read_job_order(self, page_id: str) -> dict:
         """The ``jo get`` answer the t6 API would give for the page just created."""
         self.retrieved.append(page_id)
-        props = self.pages[page_id]["properties"]
-        return {
-            "page_id": page_id,
-            "name": props["Name"]["title"][0]["plain_text"],
-            "telegram_key": props["Telegram Key"]["rich_text"][0]["plain_text"],
-        }
+        page = self.pages[page_id]
+        return {"page_id": page_id, "name": page["name"], "telegram_key": page["telegram_key"]}
 
-    async def find_job_orders(self, telegram_key: str):
+    async def find_job_orders(self, chat_id: int, message_id: int):
         return []
 
     async def find_contacts(self, mentions: list[str]) -> list[ContactMatch]:

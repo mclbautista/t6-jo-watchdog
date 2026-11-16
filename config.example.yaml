@@ -31,9 +31,10 @@ ledger_path: "./data/ledger.db"     # the container uses /app/data (a named volu
 llm_model_hint: "deepseek-chat"     # the API's provider model; the "latest" alias, never a dated pin
 llm_timeout_seconds: 70             # at least 70: the API waits up to 60 s for the provider
 
-# --- Planning (#21) ---
-department_aliases:                 # header token -> Notion Department option
-  TO: TOC
+# --- Job Orders (#134, #151) ---
+# The Department rules (aliases, live options) run in the t6 API (T6_DEPARTMENT_ALIASES there).
+# An old department_aliases key still boots and is ignored.
+raise_poll_seconds: 60              # how long to wait for the page of a raised Job Order
 
 # --- Resolution and caches (#22) ---
 contacts_data_source_id: "77b2a701-71db-4e88-a694-37f07303e77e"

@@ -11,13 +11,13 @@ from pathlib import Path
 import httpx
 
 from jo_watchdog.adapters.jev import JevMatcher, MatcherError, MatchEvidence
+from jo_watchdog.adapters.t6api import raise_input
 from jo_watchdog.app.config import Config
 from jo_watchdog.app.matching import ResolvedProject, run_match_stage, with_deliverable
+from jo_watchdog.core.job_order import JobOrderPlan
 from jo_watchdog.core.masker import WITHHELD
 from jo_watchdog.core.matching import Candidate, CandidateDecision, MatchResult
-from jo_watchdog.core.payload import build_notion_payload
-from jo_watchdog.core.plan import build_plan
-from tests.fakes import FakeNotion
+from tests.fakes import FakeJobOrders
 
 PAIRS = json.loads(
     (Path(__file__).parent / "fixtures" / "jev" / "regression_pairs.json").read_text(
@@ -279,10 +279,18 @@ class PipelineShapeTests(unittest.IsolatedAsyncioTestCase):
     """Matching feeds the one Notion write; it never blocks or adds a relation in shadow."""
 
     async def write(self, result) -> dict:
-        plan = build_plan(name="MG - TOC - JO #41", telegram_key="-100123:9", raw_text="JO text")
-        payload = with_deliverable(build_notion_payload(plan, data_source_id="ds-jo"), result)
-        notion = FakeNotion()
-        await notion.create_page(payload)
+        properties = {
+            "Name": {"title": [{"type": "text", "text": {"content": "MG - TOC - JO #41"}}]},
+            "Telegram Key": {"rich_text": [{"type": "text", "text": {"content": "-100123:9"}}]},
+            "Status": {"status": {"name": "Needs Intake Review"}},
+        }
+        plan = JobOrderPlan(
+            telegram_key="-100123:9",
+            name="MG - TOC - JO #41",
+            properties=with_deliverable({"properties": properties}, result)["properties"],
+        )
+        notion = FakeJobOrders()
+        await notion.confirm_job_order(raise_input(plan, "watchdog-jo--100123:9"), "token")
         return notion.created[0]
 
     async def test_shadow_mode_never_writes_a_relation(self):

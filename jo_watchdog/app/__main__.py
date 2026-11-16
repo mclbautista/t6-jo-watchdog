@@ -81,6 +81,8 @@ async def run(config_path: str) -> None:
     if missing:
         raise RuntimeError(f"missing secrets in the environment: {', '.join(missing)}")
     configure_logging(log_path=Path(config.ledger_path).with_name("jo-watchdog.jsonl"))
+    if "department_aliases" in config.model_fields_set:
+        logging.getLogger("jo_watchdog").warning("config key ignored: department_aliases")
     ledger = Ledger(config.ledger_path, gateway_mode=config.telegram_mode == "gateway")
 
     adapters = build_adapters(config)

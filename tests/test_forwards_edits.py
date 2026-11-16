@@ -22,8 +22,8 @@ from jo_watchdog.ledger.states import State
 from tests.fakes import (
     POSTED_AT_UNIX,
     FakeClassifier,
+    FakeJobOrders,
     FakeMatcher,
-    FakeNotion,
     FakeTelegram,
     ok_result,
     project,
@@ -113,7 +113,7 @@ class Harness:
         self.ledger = Ledger(Path(self.tmp.name) / "ledger.db")
         test.addCleanup(self.ledger.close)
         self.telegram = FakeTelegram()
-        self.notion = FakeNotion()
+        self.notion = FakeJobOrders(departments=("TOC", "VID", "OE"))
         self.config = make_config()
         self.caches = None
         self.matcher = FakeMatcher(
@@ -136,11 +136,9 @@ class Harness:
                 ],
                 "2026-09-28T00:00:00Z",
             )
-            self.caches._apply("departments", ["TOC", "VID", "OE"], "2026-09-28T00:00:00Z")
         self.worker = Worker(
             ledger=self.ledger,
             telegram=self.telegram,
-            notion=self.notion,
             job_orders=self.notion,
             classifier=classifier or FakeClassifier(ok_result(title="Teaser", task="Edit")),
             config=self.config,
@@ -324,9 +322,9 @@ class RepostAndReuseTests(unittest.IsolatedAsyncioTestCase):
                 await h.feed(message_update(1, 10, "MFG - TOC - JO #74\nTask: cut teaser"))
                 await h.feed(message_update(2, 11, f"MFG - TOC - {second}\nTask: color pass"))
                 self.assertEqual(h.row(11)["jo_key"], "proj-mfg|74")
-                self.assertIn("#074 already used on", h.posts()[0])
+                self.assertIn("#74 already used on", h.posts()[0])
                 self.assertEqual(
-                    json.loads(h.row(11)["plan_json"])["duplicate"]["jo_number"], "#074"
+                    json.loads(h.row(11)["plan_json"])["duplicate"]["jo_number"], "#74"
                 )
 
     async def test_exact_repost_wins_over_number_reuse(self):
@@ -428,7 +426,7 @@ class EditTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("changed", h.body(0))
         edit_posts = [p for p in h.posts() if p.startswith("✏️")]
         self.assertEqual(len(edit_posts), 1)
-        self.assertIn("https://notion.example/page-1", edit_posts[0])
+        self.assertIn("https://www.notion.so/page1", edit_posts[0])
         self.assertEqual([e["outcome"] for e in h.edits(10)], ["reported"] * 2)
 
     async def test_edit_to_ignored_message_is_recorded_only(self):

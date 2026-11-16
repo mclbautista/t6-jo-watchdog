@@ -1,4 +1,5 @@
 from jo_watchdog.core.plan import NOTES_PROPERTY
+
 """Notion schema and relation smoke probes (#59): assertions and honest results, offline.
 
 The recorded schemas below stand in for the live Notion responses; the live run

@@ -11,8 +11,10 @@ from __future__ import annotations
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
+from t6.verbs import JoRaiseInput
 
 from jo_watchdog.core.extraction import Extraction
+from jo_watchdog.core.job_order import RaisePreview
 from jo_watchdog.core.matching import Candidate, MatchResult
 from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
 
@@ -97,21 +99,25 @@ class TelegramClient(Protocol):
 
 
 @runtime_checkable
-class NotionClient(Protocol):
-    """The Job Order write. Reads of Job Orders go through ``JobOrderReader``."""
+class JobOrderApi(Protocol):
+    """Job Orders over the t6 API: raise (preview, confirm), recovery and read-back."""
 
-    async def create_page(self, payload: dict) -> PageRef: ...
+    async def preview_job_order(self, inputs: JoRaiseInput) -> RaisePreview:
+        """``jo raise`` without a confirm: nothing is written."""
+        ...
 
+    async def confirm_job_order(self, inputs: JoRaiseInput, token: str) -> str:
+        """Confirm a preview; return the T6 Job Order ID (the page appears later)."""
+        ...
 
-@runtime_checkable
-class JobOrderReader(Protocol):
-    """Job Order recovery and read-back, over the t6 API (``jo find``, ``jo get``)."""
+    async def job_order_page(self, jo_id: str) -> str | None:
+        """The page ID of a raised Job Order, or None while the page is not there yet."""
+        ...
 
-    async def find_job_orders(self, telegram_key: str) -> list[PageRef]:
-        """Job Orders whose Telegram Key equals ``telegram_key``, oldest first.
+    async def find_job_orders(self, chat_id: int, message_id: int) -> list[PageRef]:
+        """Job Orders raised from this message, oldest first.
 
-        Reserved for recovering from an uncertain write; normal success reads
-        back by id.
+        Reserved for recovering from an uncertain write and for the check before a raise.
         """
         ...
 
@@ -130,10 +136,6 @@ class DirectoryReader(Protocol):
 
     async def projects(self) -> list[dict[str, Any]]:
         """``project list`` items."""
-        ...
-
-    async def departments(self) -> list[str]:
-        """Department names, MISC included."""
         ...
 
 

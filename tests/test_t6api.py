@@ -4,7 +4,7 @@ import asyncio
 import tempfile
 import threading
 import unittest
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from t6.client import APIError, Unavailable
@@ -14,13 +14,12 @@ from jo_watchdog.adapters.protocols import (
     ContactMatcher,
     DeliverableSource,
     DirectoryReader,
-    JobOrderReader,
+    JobOrderApi,
     Matcher,
     ProjectMatcher,
 )
-from jo_watchdog.adapters.t6api import T6Api, T6ApiError
+from jo_watchdog.adapters.t6api import KeyAlreadyHeld, T6Api, T6ApiError
 from jo_watchdog.app.caches import CacheManager, person_from_api
-from jo_watchdog.core.deadline import resolve_deadline
 from jo_watchdog.ledger.db import Ledger
 from tests.fakes import FakeMatcher, resolved
 from tests.test_caches import config
@@ -31,7 +30,6 @@ PERSON = {
     "telegram_user_id": 111,
     "telegram_handle": "@ana_r",
     "aliases": ["Ana", "Ate A"],
-    "end_of_shift": "21:00:00",
 }
 
 
@@ -75,12 +73,15 @@ class FakeClient:
     def jo_get(self, inputs):
         return self._answer("jo_get", inputs)
 
+    def jo_raise(self, inputs):
+        return self._answer("jo_raise", inputs)
+
 
 class OutcomeMappingTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_seam_satisfies_both_protocols(self):
         api = T6Api(FakeClient())
         self.assertIsInstance(api, DirectoryReader)
-        self.assertIsInstance(api, JobOrderReader)
+        self.assertIsInstance(api, JobOrderApi)
 
     async def test_unavailable_refused_api_error_and_ambiguous_raise_one_error(self):
         for answer, text in (
@@ -108,16 +109,92 @@ class OutcomeMappingTests(unittest.IsolatedAsyncioTestCase):
         client = FakeClient(
             jo_find=Done(result={"job_orders": [{"page_id": "p-1"}, {"page_id": "p-2"}]})
         )
-        refs = await T6Api(client).find_job_orders("-100:7")
+        refs = await T6Api(client).find_job_orders(-100, 7)
         self.assertEqual([r.id for r in refs], ["p-1", "p-2"])
         self.assertTrue(refs[0].url.endswith("p1"))
-        self.assertEqual(client.inputs["jo_find"].telegram_key, "-100:7")
+        asked = client.inputs["jo_find"]
+        self.assertEqual((asked.chat_id, asked.message_id, asked.telegram_key), ("-100", "7", None))
 
     async def test_read_job_order_returns_the_job_order(self):
         order = {"page_id": "p-1", "name": "N", "telegram_key": "-100:7", "date": None}
         client = FakeClient(jo_get=Done(result={"job_order": order}))
         self.assertEqual(await T6Api(client).read_job_order("p-1"), order)
         self.assertEqual(client.inputs["jo_get"].ref, "p-1")
+
+
+PLAN = {
+    "name": "MFG - TOC - JO #74",
+    "jo_number": "#74",
+    "department": "TOC",
+    "deadline": "2026-10-23T21:00:00+08:00",
+    "deadline_source": "shift",
+    "deadline_findings": [{"code": "shift_fallback", "params": {}}],
+    "department_findings": [],
+    "telegram_key": "-100:7",
+    "duplicate_key": "proj|74",
+    "jo_id": None,
+}
+
+
+def raise_inputs():
+    from t6.verbs import JoRaiseInput, JoRaiseMessage
+
+    message = JoRaiseMessage(
+        header_text="MFG - TOC - JO #74",
+        posted_at=datetime(2026, 10, 22, 9, 0, tzinfo=UTC),
+        chat_id="-100",
+        message_id="7",
+    )
+    return JoRaiseInput(message=message, fields={}, idempotency_key="watchdog-jo--100:7")
+
+
+class RaiseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_preview_returns_what_the_api_built_and_the_token(self):
+        from t6.verbs import Preview
+
+        client = FakeClient(jo_raise=Preview(plan=PLAN, token="tok"))
+        preview = await T6Api(client).preview_job_order(raise_inputs())
+        self.assertEqual(
+            (preview.token, preview.name, preview.jo_number, preview.department),
+            ("tok", "MFG - TOC - JO #74", "#74", "TOC"),
+        )
+        self.assertEqual(preview.deadline, "2026-10-23T21:00:00+08:00")
+        self.assertEqual(preview.deadline_findings, [{"code": "shift_fallback", "params": {}}])
+        self.assertEqual((preview.telegram_key, preview.duplicate_key), ("-100:7", "proj|74"))
+        self.assertIsNone(client.inputs["jo_raise"].confirm)
+
+    async def test_the_confirm_sends_the_token_with_the_same_key_and_returns_the_job_order_id(self):
+        client = FakeClient(jo_raise=Done(result={**PLAN, "jo_id": "t6j_1", "page_id": None}))
+        jo_id = await T6Api(client).confirm_job_order(raise_inputs(), "tok")
+        self.assertEqual(jo_id, "t6j_1")
+        sent = client.inputs["jo_raise"]
+        self.assertEqual((sent.confirm, sent.idempotency_key), ("tok", "watchdog-jo--100:7"))
+
+    async def test_a_preview_answer_where_a_done_is_wanted_is_an_error(self):
+        from t6.verbs import Preview
+
+        client = FakeClient(jo_raise=Preview(plan=PLAN, token="tok"))
+        with self.assertRaises(T6ApiError):
+            await T6Api(client).confirm_job_order(raise_inputs(), "tok")
+
+    async def test_a_refusal_that_the_key_is_held_is_its_own_error(self):
+        client = FakeClient(jo_raise=Refused(rule="telegram_key", reason="Telegram Key is held"))
+        with self.assertRaises(KeyAlreadyHeld):
+            await T6Api(client).preview_job_order(raise_inputs())
+
+    async def test_the_page_is_none_until_it_exists(self):
+        for page, expected in ((None, None), ("p-1", "p-1")):
+            client = FakeClient(jo_get=Done(result={"job_order": {"page_id": page}}))
+            self.assertEqual(await T6Api(client).job_order_page("t6j_1"), expected)
+            self.assertEqual(client.inputs["jo_get"].ref, "t6j_1")
+
+    async def test_an_outage_on_preview_or_confirm_is_one_error(self):
+        for answer in (Unavailable("connection refused"), APIError("API returned HTTP 503", 503)):
+            api = T6Api(FakeClient(jo_raise=answer))
+            with self.assertRaises(T6ApiError):
+                await api.preview_job_order(raise_inputs())
+            with self.assertRaises(T6ApiError):
+                await api.confirm_job_order(raise_inputs(), "tok")
 
 
 def found(match, method="normalized", *, review=False, candidates=()):
@@ -302,7 +379,6 @@ class CachesOverTheApiTests(unittest.IsolatedAsyncioTestCase):
             project_list=Done(
                 result={"projects": [{"page_id": "proj-1", "name": "Show", "project_code": "SHW"}]}
             ),
-            departments=Done(result={"departments": [{"id": "1", "name": "TOC"}]}),
         )
         answers.update(overrides)
         return FakeClient(**answers)
@@ -316,35 +392,23 @@ class CachesOverTheApiTests(unittest.IsolatedAsyncioTestCase):
             clock=lambda: self.now,
         )
 
-    def test_a_contact_arrives_with_aliases_as_a_list_and_a_parsed_shift(self):
+    def test_a_contact_arrives_with_aliases_as_a_list(self):
         person = person_from_api(PERSON)
         self.assertEqual(person.aliases, ["Ana", "Ate A"])
-        self.assertEqual(person.end_of_shift, time(21))
         self.assertEqual(person.telegram_user_id, "111")
 
-    def test_a_flexible_shift_and_missing_ids_become_blank(self):
-        person = person_from_api({"page_id": "c-1", "name": "Bo", "end_of_shift": None})
-        self.assertEqual((person.end_of_shift, person.telegram_user_id), ("", ""))
+    def test_missing_ids_become_blank(self):
+        person = person_from_api({"page_id": "c-1", "name": "Bo"})
+        self.assertEqual(person.telegram_user_id, "")
         self.assertEqual(person.aliases, [])
 
-    async def test_refresh_loads_the_three_lists_and_a_restart_keeps_the_shift_a_time(self):
+    async def test_refresh_loads_the_two_lists_and_a_restart_keeps_them(self):
         await self.manager(self.client()).refresh()
         restarted = self.manager(self.client())
         restarted.load_persisted()
         self.assertTrue(restarted.ready)
-        self.assertEqual(restarted.people[0].end_of_shift, time(21))
+        self.assertEqual(restarted.people[0].name, "Ana Reyes")
         self.assertEqual(restarted.projects[0].name, "Show")
-        self.assertEqual(restarted.departments, ["TOC"])
-
-    async def test_a_parsed_shift_reaches_the_deadline_rule_unchanged(self):
-        caches = self.manager(self.client())
-        await caches.refresh()
-        shifts = (await caches.resolve_people("Ana", None)).assignee_shifts
-        posted = datetime(2026, 10, 22, 9, 0, tzinfo=UTC)
-        result = resolve_deadline(
-            "end of shift", posted, [(s.name, s.end_of_shift) for s in shifts]
-        )
-        self.assertEqual((result.source, result.deadline.hour), ("shift", 21))
 
     async def test_an_api_outage_keeps_the_last_snapshot(self):
         caches = self.manager(self.client())

@@ -382,6 +382,13 @@ MIGRATION_11 = [
     "ALTER TABLE outbox ADD COLUMN poll_seq INTEGER",
 ]
 
+# Job Orders raised through the t6 API (#134): the T6 Job Order ID the confirm returned, kept
+# while the row is still ``writing`` until the page appears. Nullable, so the prior release
+# still opens the ledger.
+MIGRATION_12 = [
+    "ALTER TABLE messages ADD COLUMN jo_id TEXT",
+]
+
 Migration = list[str] | Callable[[sqlite3.Connection], None]
 
 # Keyed by number and applied in ascending order of the numbers not yet recorded.
@@ -397,6 +404,7 @@ MIGRATIONS: dict[int, Migration] = {
     9: MIGRATION_9,
     10: MIGRATION_10,
     11: MIGRATION_11,
+    12: MIGRATION_12,
 }
 
 # Migrations that rebuild a referenced table run with foreign-key enforcement off.

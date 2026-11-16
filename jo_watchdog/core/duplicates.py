@@ -5,8 +5,7 @@ whether two *different* messages look like the same JO (#24). It never merges
 or suppresses anything: every new message still gets its own row, and a match
 only adds an earlier-row reference to Notes plus an ops finding.
 
-The JO Number integer comes from the header parser (#21): ``#074``, ``074``
-and ``74`` all give 74, while the displayed JO Number stays as posted.
+The duplicate key (Project and JO Number) comes from the t6 API's ``jo raise`` preview (#151).
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
-from t6.domain.job_order_rules import jo_key as jo_key  # the rule is t6's; kept importable here
 
 from jo_watchdog.core.job_order import JobOrderPlan, plain_text, rich_text
 from jo_watchdog.core.plan import WATCHDOG_NOTES_PROPERTY

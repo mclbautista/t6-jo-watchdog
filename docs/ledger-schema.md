@@ -37,7 +37,8 @@ keys before commit, so tables that reference `messages(id)` stay valid.
 | first_line         | TEXT    | first non-empty line (Name fallback)               |
 | state              | TEXT    | one of `received`,`extracted`,`planned`,`writing`,`written`,`done`,`ignored` |
 | plan_json          | TEXT    | the exact stored plan (Name, Telegram Key, blocks) |
-| notion_page_id     | TEXT    | Notion page id after a successful create           |
+| notion_page_id     | TEXT    | Notion page id once the Job Order's page exists     |
+| jo_id              | TEXT    | v12 (#134): the T6 Job Order ID the `jo raise` confirm returned; NULL before that and for rows written earlier. The page appears a few seconds later; while the row is `writing` a retry polls `jo get` with this ID and never raises again |
 | readback_mismatch  | TEXT    | mismatch detail from read-back comparison          |
 | findings_json      | TEXT    | v5: final findings (`[{code, params}]`), plan plus read-back |
 | reaction_state     | TEXT    | v5: capture reaction (👍, or 🤔 when findings were stored), `pending` \| `set` \| `failed` |
@@ -275,12 +276,12 @@ same outbound boundary. Version 3 adds `extracted` (validated DeepSeek output)
 and `ignored` (`not_jo` and `no_text`). A failed classify call leaves the row in
 `received` with `attempts` incremented and `next_attempt_at` set; there is no
 partial-row fallback. `writing` is the crash-window state:
-before the Notion create call a row moves to `writing`. The created page id is stored
-at once, so a later read-back failure retries only the retrieve. A `writing` row
-with no stored page id is uncertain: after at least the first retry delay the
-watchdog queries Notion by `Telegram Key`, adopts the one match, creates only
-when there is none, and reports (never merges or deletes) several. Normal
-success never queries by `Telegram Key`. The move to `planned` and the stored
+before the `jo raise` call a row moves to `writing`. The confirm returns the T6 Job
+Order ID (`jo_id`), stored at once; the page ID follows when the page appears, and a
+later read-back failure retries only the retrieve. A `writing` row with neither is
+uncertain: after at least the first retry delay the watchdog asks `jo find` with the
+chat and message ID, adopts the one match, raises only when there is none, and
+reports (never merges or deletes) several. The move to `planned` and the stored
 plan commit in one transaction.
 
 Migrations are keyed by number and applied in ascending order of the numbers

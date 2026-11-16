@@ -1,6 +1,6 @@
 """Six-hourly People, Projects and Department caches, persisted in the ledger.
 
-The three lists are read through the t6 API (``person list``, ``project list``, ``departments``).
+The two lists are read through the t6 API (``person list`` and ``project list``).
 
 Every successful, non-empty refresh is written to ``cache_snapshot`` and becomes
 the live snapshot. On restart the latest persisted snapshot loads before the
@@ -24,7 +24,6 @@ from pydantic import BaseModel
 from jo_watchdog.adapters.protocols import DirectoryReader, Matcher
 from jo_watchdog.app.config import Config, resolve_settings
 from jo_watchdog.core.resolve import (
-    DepartmentResolution,
     MentionEntity,
     PeopleResolution,
     Person,
@@ -35,14 +34,13 @@ from jo_watchdog.core.resolve import (
     normalize_handle,
     people_mentions,
     people_resolution,
-    resolve_department,
     resolve_project,
 )
 from jo_watchdog.ledger.db import Ledger
 
 log = logging.getLogger("jo_watchdog.caches")
 
-KINDS = ("people", "projects", "departments")
+KINDS = ("people", "projects")
 # Bump when the cached payload shape changes; older snapshots are then ignored.
 FORMAT_VERSION = 2
 
@@ -52,7 +50,6 @@ CONTACT_NAME = "Name"
 CONTACT_USER_ID = "TelegramUserID"
 CONTACT_HANDLE = "TelegramHandle"
 CONTACT_ALIASES = "Aliases"
-CONTACT_END_OF_SHIFT = "End of Shift"
 PROJECT_NAME = "Name"
 JO_DEPARTMENT = "Department"
 
@@ -88,7 +85,6 @@ def person_from_page(page: dict[str, Any]) -> Person:
         telegram_user_id=_plain(props.get(CONTACT_USER_ID)),
         telegram_handle=_plain(props.get(CONTACT_HANDLE)),
         aliases=[a.strip() for a in _plain(props.get(CONTACT_ALIASES)).split(",") if a.strip()],
-        end_of_shift=_plain(props.get(CONTACT_END_OF_SHIFT)),
     )
 
 
@@ -101,7 +97,7 @@ def project_from_page(page: dict[str, Any]) -> ProjectEntry:
 
 
 def person_from_api(item: dict[str, Any]) -> Person:
-    """A ``person list`` item. Aliases are a list and the end of shift is already a time."""
+    """A ``person list`` item. Aliases are a list."""
     user_id = item.get("telegram_user_id")
     return Person(
         page_id=item["page_id"],
@@ -109,7 +105,6 @@ def person_from_api(item: dict[str, Any]) -> Person:
         telegram_user_id="" if user_id is None else str(user_id),
         telegram_handle=item.get("telegram_handle") or "",
         aliases=list(item.get("aliases") or ()),
-        end_of_shift=item.get("end_of_shift") or "",
     )
 
 
@@ -159,7 +154,6 @@ class CacheManager:
         self.clock = clock
         self.people: list[Person] | None = None
         self.projects: list[ProjectEntry] | None = None
-        self.departments: list[str] | None = None
         self.fetched_at: dict[str, str] = {}
         self.last_attempt: datetime | None = None
         self._stale_reported: set[str] = set()
@@ -181,8 +175,6 @@ class CacheManager:
             self.people = [Person(**p) for p in payload]
         elif kind == "projects":
             self.projects = [ProjectEntry(**p) for p in payload]
-        else:
-            self.departments = list(payload)
         self.fetched_at[kind] = fetched_at
 
     async def _fetch(self, kind: str) -> list:
@@ -190,12 +182,9 @@ class CacheManager:
             return [
                 person_from_api(p).model_dump(mode="json") for p in await self.directory.people()
             ]
-        if kind == "projects":
-            return [
-                project_from_api(p).model_dump(mode="json")
-                for p in await self.directory.projects()
-            ]
-        return await self.directory.departments()
+        return [
+            project_from_api(p).model_dump(mode="json") for p in await self.directory.projects()
+        ]
 
     async def refresh(self) -> list[StaleCache]:
         """Refresh every kind; return stale-cache events for failed refreshes past the threshold."""
@@ -249,9 +238,7 @@ class CacheManager:
     @property
     def ready(self) -> bool:
         """True once every kind has a loaded snapshot; until then planning holds."""
-        return (
-            self.people is not None and self.projects is not None and self.departments is not None
-        )
+        return self.people is not None and self.projects is not None
 
     async def resolve_people(
         self,
@@ -278,7 +265,7 @@ class CacheManager:
             )
             for m in mentions
         ]
-        return people_resolution(merge_leads(mentions, groups), self.people, self.settings)
+        return people_resolution(merge_leads(mentions, groups), self.settings)
 
     def contact_for_telegram_user(self, user_id: int | None, username: str | None) -> str | None:
         """The one Contact whose TelegramUserID or TelegramHandle matches, else None.
@@ -294,16 +281,23 @@ class CacheManager:
             found = [p for p in people if normalize_handle(p.telegram_handle) == handle]
         return found[0].name if len(found) == 1 else None
 
-    async def resolve_project(self, project_raw: str | None) -> ProjectResolution:
-        """The Project the API finds in the header's project text (``project resolve``).
+    async def resolve_project(
+        self, header_text: str | None, project_raw: str | None
+    ) -> ProjectResolution:
+        """The Project the API finds in the posted header line (``project resolve``), else in
+        the model's reading of the project (``project_raw``).
 
         Raises ``T6ApiError`` when the API cannot answer: the worker holds the message.
         """
         if self.projects is None:
             raise RuntimeError("Projects cache has not loaded; hold planning")
-        text = (project_raw or "").strip()
-        match = await self.matcher.find_project(text) if text else None
-        return resolve_project(project_raw, match)
+        match = None
+        for text in (header_text, project_raw):
+            if text and text.strip():
+                match = await self.matcher.find_project(text.strip())
+                if match.page_id:
+                    break
+        return resolve_project((project_raw or "").strip() or header_text, match)
 
     def project_name(self, page_id: str | None) -> str | None:
         """The cached name of a resolved Project page, for the matcher's ``state``."""
@@ -311,8 +305,3 @@ class CacheManager:
             if project.page_id == page_id:
                 return project.name
         return None
-
-    def resolve_department(self, token: str | None) -> DepartmentResolution:
-        if self.departments is None:
-            raise RuntimeError("Department options have not loaded; hold planning")
-        return resolve_department(token, self.departments, self.settings.department_aliases)

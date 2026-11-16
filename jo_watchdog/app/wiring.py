@@ -107,7 +107,6 @@ def build_worker(config: Config, ledger: Ledger, adapters: Adapters, **worker_op
     return Worker(
         ledger=ledger,
         telegram=adapters.telegram,
-        notion=adapters.notion,
         job_orders=adapters.t6api,
         classifier=adapters.classifier,
         config=config,

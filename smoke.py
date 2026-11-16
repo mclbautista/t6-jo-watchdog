@@ -137,6 +137,7 @@ from jo_watchdog.app.tuning import build_report, match_samples, read_report, wri
 from jo_watchdog.app.wiring import build_adapters, build_worker, missing_wiring
 from jo_watchdog.core.extraction import EXTRACTED_FIELDS, PROMPT_TAG, Extraction
 from jo_watchdog.core.masker import WITHHELD, outbound_text
+from jo_watchdog.core.payload import page_url_for
 from jo_watchdog.core.report import DRY_RUN_HEADER
 from jo_watchdog.ledger.db import Ledger
 
@@ -597,8 +598,8 @@ async def synthetic_capture(s: Smoke, text: str, *, dry_run: bool) -> tuple[Resu
             msg = ledger.get_message(key)
             s.smoke_page_key = key if msg and msg["notion_page_id"] else None
             if msg and msg["notion_page_id"]:
-                page = await adapters.notion.retrieve_page(msg["notion_page_id"])
-                print(f"    created {page.get('url')} — delete it by hand")
+                page = await adapters.t6api.read_job_order(msg["notion_page_id"])
+                print(f"    created {page_url_for(msg['notion_page_id'])} — delete it by hand")
                 if "smoke-secret" in json.dumps(page):
                     return fail("credential reached Notion properties"), telegram
         finally:

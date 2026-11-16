@@ -1,5 +1,4 @@
-from jo_watchdog.core.plan import NOTES_PROPERTY
-"""The worker plans with the #21 planner and the #22 resolvers, and replays the stored plan."""
+"""The worker plans with the #21 planner, the #22 resolvers and the API's rules, and replays the stored plan."""
 
 import json
 import tempfile
@@ -7,17 +6,17 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from jo_watchdog.adapters.notion import NotionError
+from jo_watchdog.adapters.t6api import T6ApiError
 from jo_watchdog.app.caches import CacheManager
 from jo_watchdog.app.config import Config
 from jo_watchdog.app.worker import Worker
-from jo_watchdog.core.deadline import MANILA
-from jo_watchdog.core.job_order import manila_iso
+from jo_watchdog.core.job_order import MANILA
+from jo_watchdog.core.plan import NOTES_PROPERTY
 from jo_watchdog.ledger.db import Ledger
 from tests.fakes import (
     FakeClassifier,
+    FakeJobOrders,
     FakeMatcher,
-    FakeNotion,
     FakeTelegram,
     live_date,
     ok_result,
@@ -34,7 +33,6 @@ PEOPLE = [
         "page_id": "c-ben",
         "name": "Benjamin Cruz",
         "telegram_user_id": "222",
-        "end_of_shift": "10:00 PM",
     },
     {"page_id": "c-ana", "name": "Anabelle Reyes", "aliases": ["Ana"]},
     {"page_id": PRIYA, "name": "Priya"},
@@ -42,19 +40,33 @@ PEOPLE = [
 PROJECTS = [{"page_id": "proj-mfg", "name": "Manufacturing"}]
 # What the t6 API answers for the mentions these tests post (invented names).
 ANSWERS = {
-    "222": resolved("c-ben", "Benjamin Cruz", "exact_id"),
-    "Benjamin": resolved("c-ben", "Benjamin Cruz"),
-    "Benjamin Cruze": resolved("c-ben", "Benjamin Cruz", "fuzzy"),
+    "222": resolved("c-ben", "Benjamin Cruz", "exact_id", t6_id="t6n_ben"),
+    "Benjamin": resolved("c-ben", "Benjamin Cruz", t6_id="t6n_ben"),
+    "Benjamin Cruze": resolved("c-ben", "Benjamin Cruz", "fuzzy", t6_id="t6n_ben"),
     "Ana": resolved("c-ana", "Anabelle Reyes"),
     "Priya": resolved(PRIYA, "Priya"),
 }
 
 
-def make_caches(ledger, config, matcher, *, people=PEOPLE, departments=("TOC", "VID")):
+# What the API's rules answer for the deadline phrases these tests post: the ISO time, its
+# source and its findings. "end of shift" is Benjamin's 10 PM.
+DEADLINES = {
+    "Sep 30 end of shift": ("2026-09-30T22:00:00+08:00", "shift"),
+    "Sep 30, 2030 end of shift": ("2030-09-30T22:00:00+08:00", "shift"),
+    "Sep 16, 2020 5PM": (
+        "2020-09-16T17:00:00+08:00",
+        "stated",
+        [{"code": "deadline_past", "params": {"days": 2200}}],
+    ),
+    "September 16, 2am": ("2026-09-16T02:00:00+08:00", "stated"),
+    "ASAP": (None, "fallback", [{"code": "asap", "params": {}}]),
+}
+
+
+def make_caches(ledger, config, matcher, *, people=PEOPLE):
     caches = CacheManager(ledger=ledger, directory=None, matcher=matcher, config=config)
     caches._apply("people", people, FETCHED)
     caches._apply("projects", PROJECTS, FETCHED)
-    caches._apply("departments", list(departments), FETCHED)
     return caches
 
 
@@ -79,18 +91,15 @@ class Harness:
             job_orders_data_source_id="ds-1",
             standing_cc_contact_page_id=PRIYA,
         )
-        self.notion = FakeNotion()
+        self.notion = FakeJobOrders(departments=departments, deadlines=DEADLINES)
         self.telegram = FakeTelegram(
             [update(7, message_id=42, text=text, extra=fields.pop("extra", None))]
         )
         self.matcher = FakeMatcher(ANSWERS, {"MFG": project("proj-mfg", "MFG")})
-        self.caches = make_caches(
-            self.ledger, self.config, self.matcher, departments=departments
-        )
+        self.caches = make_caches(self.ledger, self.config, self.matcher)
         self.worker = Worker(
             ledger=self.ledger,
             telegram=self.telegram,
-            notion=self.notion,
             job_orders=self.notion,
             classifier=FakeClassifier(ok_result(**fields)),
             config=self.config,
@@ -134,9 +143,10 @@ class PlannerWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(props["Projects"], {"relation": [{"id": "proj-mfg"}]})
         self.assertEqual(props["Assigned"], {"relation": [{"id": "c-ben"}]})
         self.assertEqual(props["cc"], {"relation": [{"id": "c-ana"}, {"id": PRIYA}]})
-        self.assertEqual(
-            manila_iso(datetime.fromisoformat(props["Deadline"]["date"]["start"])), "2026-09-30T22:00:00+08:00"
-        )  # Benjamin's End of Shift
+        self.assertEqual(props["Deadline"]["date"]["start"], "2026-09-30T22:00:00+08:00")
+        # The API read Benjamin's End of Shift: it was sent his T6 Person ID, not a time.
+        self.assertEqual(h.notion.previews[-1].message.assignees, ["t6n_ben"])
+        self.assertEqual(h.notion.previews[-1].message.deadline_text, "Sep 30 end of shift")
         self.assertNotIn("🗂️ Coordinator", props)
         self.assertEqual(
             h.plan()["resolution"],
@@ -172,8 +182,7 @@ class PlannerWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text("Title"), "  Teaser\u00a0cut\n")
         self.assertEqual(text(NOTES_PROPERTY), notes)
         self.assertEqual(text("Subtitle"), "N/A")
-        self.assertTrue(all(len(i["text"]["content"]) <= 2000 for i in props[NOTES_PROPERTY]["rich_text"]))
-        self.assertEqual(h.plan()["properties"][NOTES_PROPERTY], props[NOTES_PROPERTY])
+        self.assertTrue(all(len(i["text"]["content"]) <= 2000 for i in h.plan()["properties"][NOTES_PROPERTY]["rich_text"]))
 
     async def test_unresolved_project_and_unknown_department_stay_blank(self):
         h = Harness(self, text="ZZZ - XYZ - JO #74\nTask: cut", task="Cut")
@@ -226,7 +235,7 @@ class PlannerWiringTests(unittest.IsolatedAsyncioTestCase):
 
         row = h.ledger.get_message(KEY)
         self.assertEqual((row["state"], row["attempts"], row["plan_json"]), ("extracted", 0, None))
-        self.assertEqual((h.matcher.calls, h.matcher.project_calls), ([], ["MFG"]))
+        self.assertEqual((h.matcher.calls, h.matcher.project_calls), ([], ["MFG - TOC - JO #74"]))
         self.assertEqual(h.notion.created, [])
 
         h.matcher.down = False
@@ -241,14 +250,14 @@ class PlannerWiringTests(unittest.IsolatedAsyncioTestCase):
         props = h.notion.created[0]["properties"]
         self.assertEqual(props["Projects"], {"relation": []})
         self.assertIn("unresolved_project", h.codes())
-        self.assertEqual(h.matcher.project_calls, ["TWIN"])
+        self.assertEqual(h.matcher.project_calls, ["TWIN - TOC - JO #74"])
 
     async def test_the_project_text_is_not_asked_again_after_the_plan_is_stored(self):
         h = Harness(self, task="Cut")
         await h.run()
         await h.worker.drain_once()
 
-        self.assertEqual(h.matcher.project_calls, ["MFG"])
+        self.assertEqual(h.matcher.project_calls, ["MFG - TOC - JO #74"])
 
     async def test_unresolved_person_is_left_out_and_recorded(self):
         h = Harness(self, task="Cut", assignees_raw="Nobody Here")
@@ -303,7 +312,7 @@ class PlannerWiringTests(unittest.IsolatedAsyncioTestCase):
 
         text = h.telegram.sent[-1][2]
         self.assertIn("ASAP", text)
-        self.assertIn("ZZZ", text)
+        self.assertIn("ZZZ - TOC - JO #74", text)  # no project reading: the posted header
         self.assertIn("asap", h.codes())
         self.assertIn("unresolved_project", h.codes())
 
@@ -322,7 +331,7 @@ class ExplicitDeadlineYearTests(unittest.IsolatedAsyncioTestCase):
         await h.run()
 
         props = h.notion.created[0]["properties"]
-        self.assertEqual(manila_iso(datetime.fromisoformat(props["Deadline"]["date"]["start"])), "2030-09-30T22:00:00+08:00")
+        self.assertEqual(props["Deadline"]["date"]["start"], "2030-09-30T22:00:00+08:00")
         self.assertEqual(props[NOTES_PROPERTY]["rich_text"][0]["text"]["content"], "keep this")
         self.assertEqual(
             props["Watchdog Notes"]["rich_text"][0]["text"]["content"],
@@ -335,7 +344,7 @@ class ExplicitDeadlineYearTests(unittest.IsolatedAsyncioTestCase):
         await h.run()
 
         props = h.notion.created[0]["properties"]
-        self.assertEqual(manila_iso(datetime.fromisoformat(props["Deadline"]["date"]["start"])), "2020-09-16T17:00:00+08:00")
+        self.assertEqual(props["Deadline"]["date"]["start"], "2020-09-16T17:00:00+08:00")
         self.assertIn(
             "Deadline as posted: Sep 16, 2020 5PM",
             props["Watchdog Notes"]["rich_text"][0]["text"]["content"],
@@ -359,15 +368,17 @@ class StoredPlanReplayTests(unittest.IsolatedAsyncioTestCase):
             h.config,
             h.matcher,
             people=[{"page_id": "c-other", "name": "Benjamin Cruz"}],
-            departments=("VID",),
         )
+        h.notion.departments = ["VID"]
         h.worker.config = h.config.model_copy(update={"dry_run": False})
         await h.worker.drain_once()
 
         [payload] = h.notion.created
         self.assertEqual(payload["properties"]["Assigned"], {"relation": [{"id": "c-ben"}]})
-        self.assertEqual(payload["properties"]["Department"], {"select": {"name": "TOC"}})
+        # TOC is no longer an option on the API side: the write-time preview differs from the plan.
+        self.assertNotIn("Department", payload["properties"])
         self.assertEqual(h.ledger.get_message(KEY)["plan_json"], stored)
+        self.assertIn("Department", h.ledger.get_message(KEY)["readback_mismatch"])
 
 
 class ConditionalReplayTests(unittest.IsolatedAsyncioTestCase):
@@ -397,33 +408,6 @@ class DryRunReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("'rich_text'", text)
 
 
-def _notion_date_error(payload: dict) -> NotionError | None:
-    """Notion's rule (#83): ``time_zone`` beside a non-zero UTC offset is a 400."""
-    for prop in payload["properties"].values():
-        date = prop.get("date") if isinstance(prop, dict) else None
-        if not date or not date.get("time_zone"):
-            continue
-        for edge in ("start", "end"):
-            value = date.get(edge)
-            if value and datetime.fromisoformat(value).utcoffset() != timedelta(0):
-                return NotionError(
-                    400,
-                    "validation_error",
-                    "body failed validation: if time zone is explicitly provided, "
-                    "start and end can't have non-zero time offsets from UTC.",
-                )
-    return None
-
-
-class StrictDateNotion(FakeNotion):
-    async def create_page(self, payload: dict):
-        error = _notion_date_error(payload)
-        if error:
-            self.create_calls += 1
-            raise error
-        return await super().create_page(payload)
-
-
 def _stored_with_time_zone(plan: dict, *, utc: bool) -> None:
     """Rewrite a stored plan's dates in the shape an earlier build stored them."""
     for field in ("Date", "Deadline"):
@@ -433,18 +417,17 @@ def _stored_with_time_zone(plan: dict, *, utc: bool) -> None:
         date["time_zone"] = "Asia/Manila"
 
 
-class NotionDatePayloadTests(unittest.IsolatedAsyncioTestCase):
-    async def test_date_and_deadline_are_sent_as_manila_offset_instants_without_time_zone(self):
+class DatePayloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_date_is_sent_as_a_manila_offset_instant_and_the_deadline_is_the_apis(self):
         h = Harness(self, task="Cut", deadline_raw="September 16, 2am")
-        h.notion = h.worker.notion = h.worker.job_orders = StrictDateNotion()
         await h.run()
+        [confirmed] = h.notion.confirms
+        date = datetime.fromisoformat(confirmed.fields["date"])
+        self.assertEqual(date.utcoffset(), timedelta(hours=8))
+        self.assertNotIn("deadline", confirmed.fields)  # built by the API from the phrase
+        self.assertEqual(confirmed.message.deadline_text, "September 16, 2am")
         [payload] = h.notion.created
-        for name in ("Date", "Deadline"):
-            date = payload["properties"][name]["date"]
-            self.assertNotIn("time_zone", date)
-            self.assertEqual(datetime.fromisoformat(date["start"]).utcoffset(), timedelta(hours=8))
-        deadline = datetime.fromisoformat(payload["properties"]["Deadline"]["date"]["start"])
-        self.assertEqual(deadline.strftime("%m-%d %H:%M"), "09-16 02:00")
+        self.assertEqual(payload["properties"]["Deadline"]["date"]["start"], "2026-09-16T02:00:00+08:00")
 
     async def test_live_readback_of_both_dates_matches_the_planned_instants(self):
         h = Harness(self, task="Cut", deadline_raw="September 16, 2am")
@@ -453,43 +436,36 @@ class NotionDatePayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["state"], "done")
         self.assertFalse(row["readback_mismatch"])
         page = next(iter(h.notion.pages.values()))
-        deadline = page["properties"]["Deadline"]["date"]
-        self.assertEqual(deadline["start"], "2026-09-16T02:00:00+08:00")
-        self.assertIsNone(deadline["time_zone"])
+        self.assertEqual(page["deadline"]["start"], "2026-09-16T02:00:00+08:00")
+        self.assertIsNone(page["deadline"]["time_zone"])
 
     async def test_an_eight_hour_shift_on_readback_is_detected_and_reported(self):
         h = Harness(self, task="Cut", deadline_raw="September 16, 2am")
-        shifted = FakeNotion()
-        original = shifted.retrieve_page
+        original = h.notion.read_job_order
 
-        async def retrieve(page_id: str) -> dict:
-            page = await original(page_id)
-            date = page["properties"]["Deadline"]["date"]
-            date["start"] = (datetime.fromisoformat(date["start"]) - timedelta(hours=8)).isoformat()
-            return page
+        async def read(page_id: str) -> dict:
+            order = await original(page_id)
+            order["deadline"] = (
+                datetime.fromisoformat(order["deadline"]) - timedelta(hours=8)
+            ).isoformat()
+            return order
 
-        shifted.retrieve_page = retrieve
-        h.notion = h.worker.notion = h.worker.job_orders = shifted
+        h.notion.read_job_order = read
         await h.run()
         row = h.ledger.get_message(KEY)
         self.assertIn("Deadline differs", row["readback_mismatch"])
         self.assertNotIn("Date differs", row["readback_mismatch"])
-        self.assertEqual(shifted.create_calls, 1)
+        self.assertEqual(h.notion.create_calls, 1)
 
     async def test_the_old_utc_shape_would_have_read_back_eight_hours_early(self):
         # The #85 trial: a UTC start with time_zone came back at the wall clock in Manila.
         read = live_date({"start": "2026-10-27T09:20:02+00:00", "time_zone": "Asia/Manila"})
         self.assertEqual(read["start"], "2026-10-27T09:20:00+08:00")
 
-    async def test_the_rejected_shape_is_recognised_by_the_strict_fake(self):
-        bad = {"date": {"start": "2026-09-15T10:00:00+08:00", "time_zone": "Asia/Manila"}}
-        self.assertIsNotNone(_notion_date_error({"properties": {"Date": bad}}))
-
     async def test_stuck_rows_with_either_earlier_stored_shape_recover_once(self):
         for utc in (False, True):
             with self.subTest(utc=utc):
                 h = Harness(self, task="Cut", deadline_raw="September 16, 2am")
-                h.notion = h.worker.notion = h.worker.job_orders = StrictDateNotion()
                 h.worker.config = h.config.model_copy(update={"dry_run": True})
                 await h.run()
                 plan = h.plan()
@@ -502,10 +478,15 @@ class NotionDatePayloadTests(unittest.IsolatedAsyncioTestCase):
                 await h.worker.drain_once()
 
                 self.assertEqual(h.notion.create_calls, 1)
-                [payload] = h.notion.created
-                self.assertNotIn("time_zone", payload["properties"]["Date"]["date"])
+                [confirmed] = h.notion.confirms
+                # The instant is kept, re-expressed at the Manila offset.
                 self.assertEqual(
-                    payload["properties"]["Deadline"]["date"]["start"], "2026-09-16T02:00:00+08:00"
+                    datetime.fromisoformat(confirmed.fields["date"]),
+                    datetime.fromisoformat(h.plan()["properties"]["Date"]["date"]["start"]),
+                )
+                self.assertEqual(
+                    datetime.fromisoformat(confirmed.fields["date"]).utcoffset(),
+                    timedelta(hours=8),
                 )
                 row = h.ledger.get_message(KEY)
                 self.assertEqual(row["state"], "done")
@@ -513,13 +494,12 @@ class NotionDatePayloadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rejected_write_keeps_the_provider_message_and_creates_no_page(self):
         h = Harness(self, task="Cut")
-        h.notion = h.worker.notion = h.worker.job_orders = FakeNotion(
+        h.notion = h.worker.job_orders = FakeJobOrders(
             fail_create=True,
-            create_error=NotionError(400, "validation_error", "time zone offsets from UTC"),
+            create_error=T6ApiError("t6 API refused (input): not Job Order fields that can be written"),
         )
         await h.run()
         row = h.ledger.get_message(KEY)
         self.assertEqual(row["state"], "writing")
-        self.assertIn("validation_error", row["last_error"])
-        self.assertIn("time zone offsets from UTC", row["last_error"])
+        self.assertIn("refused (input)", row["last_error"])
         self.assertFalse(row["notion_page_id"])

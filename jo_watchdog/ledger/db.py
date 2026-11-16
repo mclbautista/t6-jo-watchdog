@@ -26,8 +26,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-from t6.domain.job_order_rules import telegram_key
-
 from jo_watchdog.core.duplicates import text_sha256
 from jo_watchdog.core.masker import outbound_text
 from jo_watchdog.core.plan import build_plan
@@ -39,6 +37,12 @@ from jo_watchdog.ledger.migrations import (
 from jo_watchdog.ledger.states import State, can_transition
 
 CACHE_SNAPSHOTS_KEPT = 10
+
+
+def telegram_key(chat_id: int, message_id: int) -> str:
+    """The ledger's own row key, ``<chat_id>:<message_id>`` (the same format as before)."""
+    return f"{chat_id}:{message_id}"
+
 
 # Ops-post retry delays (#25, D3): attempt one is immediate; the delays between
 # attempts are 30s, 2m, 5m, 10m, so there are five attempts in total.
@@ -750,6 +754,19 @@ class Ledger:
             "UPDATE messages SET notion_page_id = ?, attempts = 0, next_attempt_at = NULL,"
             " last_error = NULL, updated_at = ? WHERE telegram_key = ? AND state = ?",
             (notion_page_id, _now(), key, State.WRITING.value),
+        )
+        return cur.rowcount == 1
+
+    def store_jo_id(self, key: str, jo_id: str) -> bool:
+        """Remember the T6 Job Order ID the API confirmed, while the row is ``writing``.
+
+        The page appears a few seconds later; a retry then polls for it and never raises again.
+        Progress, so the attempt counter restarts.
+        """
+        cur = self._conn.execute(
+            "UPDATE messages SET jo_id = ?, attempts = 0, next_attempt_at = NULL,"
+            " last_error = NULL, updated_at = ? WHERE telegram_key = ? AND state = ?",
+            (jo_id, _now(), key, State.WRITING.value),
         )
         return cur.rowcount == 1
 

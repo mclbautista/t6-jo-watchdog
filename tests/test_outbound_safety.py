@@ -15,7 +15,7 @@ from jo_watchdog.app.config import Config
 from jo_watchdog.app.worker import Worker
 from jo_watchdog.core.plan import build_plan
 from jo_watchdog.ledger.db import Ledger
-from tests.fakes import FakeClassifier, FakeNotion, FakeTelegram, update
+from tests.fakes import FakeClassifier, FakeJobOrders, FakeTelegram, update
 
 SOURCE = "PW: swordfish-credential\nordinary detail"
 WITHHELD = "[password withheld – see Telegram message]"
@@ -55,11 +55,10 @@ class WalkingCaptureSafetyTests(unittest.IsolatedAsyncioTestCase):
         ledger = Ledger(data_dir / "ledger.db")
         self.addCleanup(ledger.close)
         telegram = FakeTelegram([update(7, message_id=42, text=SOURCE)])
-        notion = FakeNotion(wrong_name=True)
+        notion = FakeJobOrders(wrong_name=True)
         worker = Worker(
             ledger=ledger,
             telegram=telegram,
-            notion=notion,
             job_orders=notion,
             classifier=FakeClassifier(),
             config=make_config(),
@@ -82,7 +81,8 @@ class WalkingCaptureSafetyTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("swordfish-credential", outbound)
         self.assertIn(WITHHELD, persisted_plan)
         self.assertIn(WITHHELD, notion_payload)
-        self.assertIn(WITHHELD, structured_logs)
+        # A log line holds the property that differs, never the text.
+        self.assertIn("read-back mismatch for -100123:42: Name", structured_logs)
 
     async def test_ignore_log_masks_first_line_before_persistence(self):
         tmp = tempfile.TemporaryDirectory()
@@ -92,11 +92,10 @@ class WalkingCaptureSafetyTests(unittest.IsolatedAsyncioTestCase):
         ledger = Ledger(data_dir / "ledger.db")
         self.addCleanup(ledger.close)
         telegram = FakeTelegram([update(7, message_id=42, topic_id=999, text=SOURCE)])
-        notion = FakeNotion()
+        notion = FakeJobOrders()
         worker = Worker(
             ledger=ledger,
             telegram=telegram,
-            notion=notion,
             job_orders=notion,
             classifier=FakeClassifier(),
             config=make_config(),

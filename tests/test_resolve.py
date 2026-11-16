@@ -1,4 +1,4 @@
-"""People, Project and Department resolution over the recorded Notion fixtures and corpus."""
+"""People and Project resolution over the recorded Notion fixtures and corpus."""
 
 import json
 import re
@@ -9,7 +9,6 @@ from pathlib import Path
 from jo_watchdog.adapters.t6api import T6ApiError
 from jo_watchdog.app.caches import (
     CacheManager,
-    department_options,
     person_from_page,
     project_from_page,
 )
@@ -22,7 +21,6 @@ from jo_watchdog.core.resolve import (
     ProjectResolution,
     ResolveSettings,
     relation_properties,
-    resolve_department,
     resolve_project,
     split_mentions,
 )
@@ -60,8 +58,7 @@ def projects():
     return [project_from_page(p) for p in _load("projects_query.json")["results"]]
 
 
-DEPARTMENTS = department_options(_load("job_orders_data_source.json"))
-SETTINGS = ResolveSettings(department_aliases={"TO": "TOC"}, standing_cc_contact_page_id=PRIYA)
+SETTINGS = ResolveSettings(standing_cc_contact_page_id=PRIYA)
 
 
 ANSWERS = {
@@ -115,14 +112,11 @@ class FixtureParsingTests(unittest.TestCase):
         by_id = {p.page_id: p for p in people()}
         self.assertEqual(by_id[NINA].telegram_handle, "@user_three")
         self.assertEqual(by_id[NINA].aliases, ["Nina", "sam", "KUYA sam"])
-        self.assertEqual(by_id[RAMON].end_of_shift, "10:00 PM")
         self.assertEqual(by_id[MIRA].telegram_user_id, "5550001")
-        self.assertEqual(by_id[PRIYA].end_of_shift, "")
 
-    def test_projects_and_departments(self):
+    def test_projects(self):
         self.assertEqual(len(projects()), 12)
         self.assertTrue(all(p.name for p in projects()))
-        self.assertEqual(DEPARTMENTS, ["TOC", "AE", "OE", "COOR", "COLOR", "VFX", "SOUND", "ADMIN"])
 
 
 class MentionSplittingTests(unittest.TestCase):
@@ -274,21 +268,17 @@ class PeopleResolutionTests(ResolvedBy):
         out = await self.resolve("ate @nobody")
         self.assertEqual([(m.raw, m.status) for m in out.mentions], [("ate @nobody", "unresolved")])
 
-    async def test_assignee_shifts_come_from_the_cached_contacts(self):
-        out = await self.resolve("Ramon, Mira / Lena")
-        shifts = [(s.name, s.end_of_shift) for s in out.assignee_shifts]
-        self.assertEqual(
-            shifts,
-            [
-                ("Ramon Reyes", "10:00 PM"),
-                ("Mira Santos", "6:00 AM"),
-                ("Lena Cruz", "Flexible / Variable"),
-            ],
-        )
+    async def test_assignees_go_to_the_api_as_t6_person_ids(self):
+        self.matcher.contacts["ramon"] = resolved(RAMON, "Ramon Reyes", t6_id="t6n_ramon")
+        self.matcher.contacts["mira"] = resolved(MIRA, "Mira Santos", t6_id="t6n_mira")
+        self.matcher.contacts["lena"] = resolved(LENA, "Lena Cruz")  # not registered yet
+        out = await self.resolve("Ramon, Mira / Lena", "Ramon")
+        self.assertEqual(out.assigned, [RAMON, MIRA, LENA])
+        self.assertEqual(out.assignee_ids, ["t6n_ramon", "t6n_mira"])
 
-    async def test_no_assignee_resolved_gives_empty_shifts(self):
+    async def test_no_assignee_resolved_gives_no_person_ids(self):
         out = await self.resolve("@user_eight")
-        self.assertEqual(out.assignee_shifts, [])
+        self.assertEqual(out.assignee_ids, [])
 
     async def test_no_standing_cc_config_means_no_standing_cc(self):
         self.caches.settings = ResolveSettings()
@@ -321,18 +311,18 @@ class ProjectTests(ResolvedBy):
         self.matcher.projects = {k.casefold(): v for k, v in PROJECT_ANSWERS.items()}
 
     async def test_a_unique_code(self):
-        out = await self.caches.resolve_project("MFG")
+        out = await self.caches.resolve_project("MFG", None)
         self.assertEqual((out.page_id, out.code, out.findings), ("p-mfg", "MFG", []))
         self.assertEqual(self.matcher.project_calls, ["MFG"])
 
     async def test_a_code_reused_by_several_projects_with_one_in_rotation(self):
-        out = await self.caches.resolve_project("TWIN")
+        out = await self.caches.resolve_project("TWIN", None)
         self.assertEqual((out.page_id, out.findings), ("p-twin-in", []))
 
     async def test_a_reused_code_with_none_or_several_in_rotation_stays_unresolved(self):
         for text in ("NONE-IN", "TWO-IN"):
             with self.subTest(text=text):
-                out = await self.caches.resolve_project(text)
+                out = await self.caches.resolve_project(text, None)
                 self.assertIsNone(out.page_id)
                 self.assertEqual(
                     [(f.code, f.params) for f in out.findings],
@@ -340,25 +330,35 @@ class ProjectTests(ResolvedBy):
                 )
 
     async def test_a_code_inside_longer_text(self):
-        out = await self.caches.resolve_project("  MFG - TOC - Season 2 ")
+        out = await self.caches.resolve_project("  MFG - TOC - Season 2 ", None)
+        self.assertEqual(out.page_id, "p-mfg")
+        self.assertEqual(self.matcher.project_calls, ["MFG - TOC - Season 2"])
+
+    async def test_the_models_project_is_asked_when_the_header_names_none(self):
+        out = await self.caches.resolve_project("Unrelated header", "MFG")
+        self.assertEqual(out.page_id, "p-mfg")
+        self.assertEqual(self.matcher.project_calls, ["Unrelated header", "MFG"])
+
+    async def test_a_header_match_is_not_asked_twice(self):
+        out = await self.caches.resolve_project("MFG - TOC - Season 2", "TWIN")
         self.assertEqual(out.page_id, "p-mfg")
         self.assertEqual(self.matcher.project_calls, ["MFG - TOC - Season 2"])
 
     async def test_an_unknown_text_is_unresolved_with_a_finding(self):
-        out = await self.caches.resolve_project("NOPE")
+        out = await self.caches.resolve_project("NOPE", None)
         self.assertIsNone(out.page_id)
         self.assertEqual([f.code for f in out.findings], ["unresolved_project"])
 
     async def test_a_blank_text_asks_nothing_and_finds_nothing(self):
         for text in (None, "", "  "):
-            out = await self.caches.resolve_project(text)
+            out = await self.caches.resolve_project(text, None)
             self.assertEqual((out.page_id, out.findings), (None, []))
         self.assertEqual(self.matcher.project_calls, [])
 
     async def test_when_the_api_cannot_answer_nothing_is_resolved(self):
         self.matcher.down = True
         with self.assertRaises(T6ApiError):
-            await self.caches.resolve_project("MFG")
+            await self.caches.resolve_project("MFG", None)
 
 
 class RelationPropertyTests(unittest.TestCase):
@@ -378,34 +378,6 @@ class RelationPropertyTests(unittest.TestCase):
         self.assertEqual(named["Projects"], {"relation": [{"id": "p-mfg"}]})
 
 
-class DepartmentTests(unittest.TestCase):
-    def test_alias_then_live_validation(self):
-        self.assertEqual(resolve_department("TO", DEPARTMENTS, {"TO": "TOC"}).department, "TOC")
-        self.assertEqual(resolve_department(" coor ", DEPARTMENTS, {}).department, "COOR")
-        self.assertEqual(resolve_department("AE", DEPARTMENTS, {}).department, "AE")
-
-    def test_unknown_department_blank_with_finding(self):
-        out = resolve_department("EDIT", DEPARTMENTS, {"TO": "TOC"})
-        self.assertFalse(out.valid)
-        self.assertIsNone(out.department)
-        self.assertEqual(
-            [(f.code, f.params) for f in out.findings], [("unknown_department", {"token": "EDIT"})]
-        )
-
-    def test_live_option_variations_resolve_to_exact_spelling(self):
-        out = resolve_department("TO", [" toc"], {"TO": "TOC"})
-        self.assertEqual(out.department, " toc")
-
-    def test_ambiguous_live_options_stay_blank_with_finding(self):
-        out = resolve_department("TOC", ["TOC", "toc "], {})
-        self.assertIsNone(out.department)
-        self.assertEqual([f.code for f in out.findings], ["unknown_department"])
-
-    def test_option_set_is_live_not_hard_coded(self):
-        self.assertEqual(resolve_department("GRADE", ["GRADE"], {}).department, "GRADE")
-        self.assertFalse(resolve_department("TOC", ["GRADE"], {}).valid)
-
-
 class CorpusPeopleTests(ResolvedBy):
     """Every corpus JO resolves without error; Priya is always in cc."""
 
@@ -423,26 +395,6 @@ class CorpusPeopleTests(ResolvedBy):
             for mention in out.mentions:
                 if mention.status != "resolved":
                     self.assertIsNone(mention.page_id)
-
-
-class CorpusTests(unittest.TestCase):
-    """Every corpus department token validates."""
-
-    HEADER_RE = re.compile(r"^(?:JO CODE:\s*)?\\?(.+?)\s*-\s*([A-Za-z]+)\s*-", re.IGNORECASE)
-
-    def setUp(self):
-        self.corpus = json.loads((FIXTURES / "redacted_corpus.json").read_text(encoding="utf-8"))
-
-    def test_corpus_department_tokens_all_validate(self):
-        tokens = set()
-        for text in self.corpus:
-            m = self.HEADER_RE.match(text.split("\n", 1)[0].strip())
-            if m:
-                tokens.add(m.group(2))
-        self.assertTrue({"TOC", "AE", "TO", "COOR", "OE"} <= tokens)
-        for token in tokens:
-            with self.subTest(token=token):
-                self.assertTrue(resolve_department(token, DEPARTMENTS, {"TO": "TOC"}).valid)
 
 
 if __name__ == "__main__":

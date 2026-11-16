@@ -22,7 +22,7 @@ from jo_watchdog.app.config import (
 from jo_watchdog.app.worker import Worker
 from jo_watchdog.ledger.db import Ledger, OutboxMessage
 from tests.fake_gateway import SECRET, FakeGateway, telegram_id_for
-from tests.fakes import FakeClassifier, FakeNotion, FakeTelegram, update
+from tests.fakes import FakeClassifier, FakeJobOrders, FakeTelegram, update
 from tests.test_worker import make_config, no_sleep
 
 URL = "http://gateway.test:8780"
@@ -101,13 +101,12 @@ class Rig:
         self.path = Path(tmp.name) / "ledger.db"
         self.gateway = FakeGateway()
         self.client = GatewayTelegramClient(URL, SECRET, transport=self.gateway.transport())
-        self.notion = FakeNotion()
+        self.notion = FakeJobOrders()
         self.ledger = Ledger(self.path)
         test.addCleanup(self.ledger.close)
         self.worker = Worker(
             ledger=self.ledger,
             telegram=self.client,
-            notion=self.notion,
             job_orders=self.notion,
             classifier=FakeClassifier(),
             config=gateway_config(),
@@ -247,7 +246,6 @@ class RollbackToDirectTests(unittest.IsolatedAsyncioTestCase):
         return Worker(
             ledger=rig.ledger,
             telegram=telegram,
-            notion=rig.notion,
             job_orders=rig.notion,
             classifier=FakeClassifier(),
             config=make_config(),

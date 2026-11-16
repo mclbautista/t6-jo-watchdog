@@ -19,7 +19,7 @@ import yaml
 from jo_watchdog.app import __main__ as entry
 from jo_watchdog.core.backfill import BackfillError, from_payload, from_text
 from jo_watchdog.ledger.db import Ledger
-from tests.fakes import POSTED_AT_UNIX, FakeClassifier, FakeNotion, FakeTelegram, update
+from tests.fakes import POSTED_AT_UNIX, FakeClassifier, FakeJobOrders, FakeTelegram, update
 from tests.test_worker import make_worker
 
 KEY = "-100123:3121"
@@ -227,7 +227,7 @@ class IngestCommandTests(unittest.TestCase):
 
     def test_cli_wait_captures_through_the_normal_worker_pipeline_once(self):
         path = self._json_file(telegram_update())
-        notion = FakeNotion()
+        notion = FakeJobOrders()
         telegram = FakeTelegram()
 
         def capture_meanwhile(_seconds):
@@ -238,7 +238,6 @@ class IngestCommandTests(unittest.TestCase):
                 worker = Worker(
                     ledger=ledger,
                     telegram=telegram,
-                    notion=notion,
                     job_orders=notion,
                     classifier=FakeClassifier(),
                     config=entry.load_config(self.config),
