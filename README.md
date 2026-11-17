@@ -10,8 +10,9 @@ data and models: the t6 API's.
 Status: the build tickets (#20 to #27, #39) are closed. Classification and
 extraction (DeepSeek, through the t6 API), people and project resolution,
 verification with ops reports, retries and the heartbeat, gateway mode and
-Deliverable matching (shadow mode) are all in. The one open issue is #103, the
-planned rename to t6-sixto-watchdog and the move onto t6.
+Deliverable matching (shadow mode) are all in. The one open issue is #103, the spec for
+the move onto the t6 API (stage 2; this code is that move). The rename to
+t6-sixto-watchdog is a separate, planned cleanup and has not been done.
 
 ## This repo is public
 
@@ -41,7 +42,8 @@ jo_watchdog/
               verification findings, ops-report rendering
   ledger/     SQLite (WAL, versioned schema), offsets, state machine
   adapters/   Telegram (aiogram-as-client), t6 API (reads, matching, Job Order raise,
-              extraction via `llm run`, Deliverable matching via `llm decide`)
+              extraction via `llm run`, Deliverable matching via `llm decide`,
+              message filter via `llm filter`)
   prompts/    versioned few-shot turns for the classify/extract prompt
   app/        config, worker loop, entry point
 tests/        unittest (runs under pytest too); real SQLite + fake adapters
@@ -87,7 +89,8 @@ python -m jo_watchdog.app --config config.yaml
 
 `config.yaml` is validated at startup: an unknown key, a bad value, or a
 missing chat id or handle stops the boot. All three
-values in `.env` (`TELEGRAM_BOT_TOKEN`, `T6_API_URL`, `T6_API_SECRET`) must be set.
+values in `.env` (`TELEGRAM_BOT_TOKEN`, `T6_API_URL`, `T6_API_SECRET`) must be set
+(in gateway mode `WATCHDOG_SECRET` replaces the bot token).
 `config.example.yaml` documents every key.
 
 Boot also rejects structurally invalid values before any provider call:
@@ -118,8 +121,9 @@ seams. The real-account checks live in `smoke.py` and are run by hand.
 4. Put the t6 API address in `.env` as `T6_API_URL` and the key of the `watchdog`
    service as `T6_API_SECRET`. The watchdog reads Contacts, Projects and
    Departments, raises and finds Job Orders, and runs extraction and Deliverable
-   matching through it. That key needs the `unmasked` and `llm` grants and the Job
-   Order raise permission, or names come back masked and resolution fails.
+   matching through it. That key needs the `unmasked`, `llm` and `coordinator`
+   permissions (`coordinator` is what `jo raise` requires), or names come back masked
+   and resolution fails.
 5. Fill `standing_cc_telegram_handle` (the handle the capture report tags) and
    `owner_telegram_handle`. The standing cc on every Job Order is added by the API:
    set `T6_STANDING_CC` there before this version runs.
@@ -165,9 +169,11 @@ mounts `config.yaml` read-only. Its health check runs `python -m jo_watchdog.app
 
 ### Retries, outage alerts and the heartbeat
 
-Classifier, Notion and ops-post failures are retried at 30 seconds, 2 minutes,
+Classifier, t6 API and ops-post failures are retried at 30 seconds, 2 minutes,
 5 minutes and 10 minutes (longer if the provider sends `Retry-After`); the
-fifth failure gives up. The message stays queued with its plan, one alert
+fifth failure gives up. While planning, a message whose t6 API call gets no answer is
+held and tried again without using up an attempt; `jo raise` is not called until the
+API answers. The message stays queued with its plan, one alert
 tagged with `owner_telegram_handle` goes to the ops topic, and nothing is
 deleted or half-written. After fixing the cause, make it eligible again:
 
@@ -339,6 +345,32 @@ value sent through `text withhold` first), and
 no Job Order is raised and no reaction is set. Setting it back to `false`
 resumes the held plans exactly as stored.
 
+### Intake filter (count first)
+
+Before extraction each in-scope message goes through `llm filter` with the rule named
+for its chat and topic (`filters` in `config.yaml`; left out, the intake topic uses
+`job_order`). The verdict is stored. While `filter_drops` is `false` (the default)
+nothing is dropped and every message is still extracted. Read the counts first:
+
+```sh
+docker compose exec watchdog python -m jo_watchdog.app filter-report --since 2026-11-01 --config /app/config.yaml
+```
+
+It prints counts by filter verdict and extraction verdict, never text. Set
+`filter_drops: true` only after the owner has read the count. A failed `llm filter` call
+is the verdict `unavailable` and the message goes on to extraction.
+
+### Comparing the new path with Job Orders already written
+
+`compare-raise` replays the last `--last N` (default 50) written messages through the
+`jo raise` preview (never the confirm, so nothing is written) and counts, for each field,
+whether the built value is the same as the one stored at the time. It exits 1 when a field
+named in `--must-match` differs. The report holds counts and ledger row ids, never text.
+
+```sh
+docker compose exec watchdog python -m jo_watchdog.app compare-raise --last 50 --config /app/config.yaml
+```
+
 ### Deliverable linking
 
 Deliverable linking is a separate, staged switch. `deliverable_link_enabled`
@@ -368,7 +400,7 @@ example) field by field against `tests/fixtures/extraction_golden.json`.
 ## Smoke test (real accounts)
 
 ```sh
-python smoke.py --config config.yaml                    # access, schema, models, pipeline
+python smoke.py --config config.yaml                    # config, API access, models, pipeline
 python smoke.py --config config.yaml --live-telegram --live-message-id 12345  # one real post
 python smoke.py --config config.yaml --only reactions   # a single step
 python smoke.py --config config.yaml --forward-fixtures fw.json --reaction-message-id 12345

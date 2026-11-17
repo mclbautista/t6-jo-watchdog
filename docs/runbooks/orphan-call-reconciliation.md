@@ -13,7 +13,7 @@ backup, private manifest, operator and reason before any live apply. Quiesce all
 writers through an independently approved procedure. Do not stop production as
 part of a staging rehearsal. Test a disposable copy first.
 
-Supports contiguous schema versions 1–9, 1–10, 1–11 and 1–12 only. Other schema versions,
+Supports contiguous schema versions 1–9, 1–10, 1–11, 1–12, 1–13 and 1–14 only. Other schema versions,
 unsupported relationships, partial/unknown audit schemas and integrity errors stop
 reconciliation. Unsupported FK violations are never repaired. A manifest containing
 blockers is not approval to repair its otherwise supported candidates.
@@ -22,7 +22,7 @@ Audit storage is **operator-bootstrap schema format 1**, separate from the numbe
 application migration stream. Only explicit apply creates
 `call_reconciliation_batches` and `call_reconciliation_evidence`, transactionally
 with the detachment, before migration 10. This is not a rewritten shipped migration,
-a workaround for migration 12, or a startup repair. Application migrations 1–12 and
+a workaround for migration 12, or a startup repair. Application migrations 1–14 and
 schema_version records are unchanged. The additive tables persist across normal
 startup and remain inspectable using SQLite. Future audit schema changes must use
 an explicit forward-only format upgrade; this command fails on unknown formats.
@@ -150,6 +150,7 @@ failed IDs stay unchanged. Migration 11 adds nullable `poll_seq` (not zero). Mig
 (#134) adds the nullable `jo_id` to `messages`: the T6 Job Order ID of a row raised through
 the API. It touches no outbox or call row, so this tool treats a version-12 ledger as it
 treats version 11, and a ledger migrated to 12 still opens with the previous image.
+Migrations 13 (`filter_verdict`) and 14 (the stored duplicate key, data only) are treated the same way.
 
 ## Recovery limits
 

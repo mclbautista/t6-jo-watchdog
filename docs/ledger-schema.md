@@ -56,7 +56,7 @@ keys before commit, so tables that reference `messages(id)` stay valid.
 | filter_verdict     | TEXT    | v13 (#153): the `llm filter` verdict `pass`, `drop`, `unsure` or `unavailable` (a failed call); NULL when not filtered |
 | exhausted_at       | TEXT    | v7: ISO-8601 UTC when the retry schedule ran out; NULL otherwise. An exhausted row keeps its state and plan, is never picked up again, and is made eligible by `retry` |
 | written_at         | TEXT    | v8 (#54): ISO-8601 UTC, set once in the `mark_written` transaction and never updated; NULL for rows written before v8 |
-| jo_key             | TEXT    | v6, reshaped in v9 (#93): `<Project page id>\|<jo_number_int>`, set at planning only when both resolve; NULL otherwise. JO Numbers are one counter per project, so the Department is not part of it |
+| jo_key             | TEXT    | v6, reshaped in v9 (#93), v14 (#134): `<Project page id, undashed lower case>\|<jo_number_int>`, the API's duplicate key, set at planning only when both resolve; NULL otherwise. JO Numbers are one counter per project, so the Department is not part of it |
 | text_sha256        | TEXT    | v6: SHA-256 of the whitespace-normalized original `text`; set on intake (backfilled) |
 | forward_origin_type| TEXT    | v6: `user`, `hidden_user`, `chat` or `channel`; NULL for a non-forward (backfilled from `raw_source`) |
 
@@ -72,6 +72,10 @@ made before it still match. It changes data only, so the previous release
 still opens the ledger; keys that release writes keep the old form and are
 not rewritten again.
 
+Migration 14 (#134) rewrites keys that hold a dashed page id to the undashed lower-case
+form the t6 API uses, so repost and number-reuse checks compare equal. It changes data
+only, so the previous release still opens the ledger.
+
 ### `stage_results` (v3)
 
 One validated result per message and stage, so a stage never recomputes.
@@ -80,7 +84,7 @@ One validated result per message and stage, so a stage never recomputes.
 |-------------|---------|--------------------------------------------------------|
 | id          | INTEGER | PK                                                     |
 | message_id  | INTEGER | NOT NULL, REFERENCES `messages(id)`                    |
-| stage       | TEXT    | NOT NULL; `extract` (#20), `match` (#26)               |
+| stage       | TEXT    | NOT NULL; `extract` (#20), `match` (#26), `preview_drift` and `reconcile` (#134) |
 | result_json | TEXT    | NOT NULL; see below                                    |
 | created_at  | TEXT    | NOT NULL, ISO-8601 UTC                                 |
 
@@ -138,7 +142,8 @@ moves to `ignored` (`not_jo` or `no_text`, with the first line as posted).
 
 ### `cache_snapshot` (v4, #22)
 
-One row per successful, non-empty refresh of a Notion lookup cache. The newest
+One row per successful, non-empty refresh of a lookup cache read through the t6 API
+(`person list`, `project list`). The newest
 row per `kind` is the live snapshot and is loaded at startup before the first
 live refresh. A failed refresh writes nothing. After each insert only the last
 10 rows per kind are kept.
@@ -146,7 +151,7 @@ live refresh. A failed refresh writes nothing. After each insert only the last
 | column         | type    | notes                                                   |
 |----------------|---------|---------------------------------------------------------|
 | id             | INTEGER | PK                                                      |
-| kind           | TEXT    | `people`, `projects` or `departments`                   |
+| kind           | TEXT    | `people` or `projects` (the check also allows `departments`; nothing writes it) |
 | format_version | INTEGER | payload shape version; a mismatching snapshot is ignored |
 | payload_json   | TEXT    | JSON array (shapes below)                               |
 | item_count     | INTEGER | number of items in the payload                          |
@@ -154,11 +159,11 @@ live refresh. A failed refresh writes nothing. After each insert only the last
 
 Index `idx_cache_snapshot_kind_fetched` on `(kind, fetched_at)`.
 
-Payload items, format version 1:
+Payload items, format version 2:
 
-- `people`: `{page_id, name, telegram_user_id, telegram_handle, aliases, end_of_shift}` from Contacts `Name`, `TelegramUserID`, `TelegramHandle`, `Aliases`, `End of Shift` (raw select value).
-- `projects`: `{page_id, name, code}` from Projects `Name` and `Project Code`.
-- `departments`: the Job Orders `Department` select option names, as strings.
+- `people`: `{page_id, name, telegram_user_id, telegram_handle, aliases}` from `person list`.
+- `projects`: `{page_id, name}` from `project list`.
+
 ### `outbox` (v5)
 
 The durable ops-topic outbox. A capture's report is inserted as `pending` in the
