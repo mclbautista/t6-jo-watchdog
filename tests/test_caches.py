@@ -10,10 +10,17 @@ from jo_watchdog.app.config import Config
 from jo_watchdog.app.worker import Worker
 from jo_watchdog.ledger.db import Ledger
 from jo_watchdog.ledger.states import State
-from tests.fakes import FakeClassifier, FakeNotion, FakeTelegram, RecordedDirectory, update
+from tests.fakes import (
+    FakeClassifier,
+    FakeJobOrders,
+    FakeMatcher,
+    FakeTelegram,
+    RecordedDirectory,
+    project,
+    resolved,
+    update,
+)
 
-JOB_ORDERS = "3d8fb4d5-9e59-8073-a0d0-000b77632947"
-PRIYA = "c0000000-0000-4000-8000-000000000001"
 
 
 def config(**overrides) -> Config:
@@ -22,8 +29,6 @@ def config(**overrides) -> Config:
         intake_topic_id=5,
         ops_chat_id=-100999,
         ops_topic_id=7,
-        job_orders_data_source_id=JOB_ORDERS,
-        standing_cc_contact_page_id=PRIYA,
     )
     values.update(overrides)
     return Config(**values)
@@ -46,6 +51,7 @@ class CacheTestCase(unittest.IsolatedAsyncioTestCase):
         self.path = Path(self.tmp.name) / "ledger.db"
         self.ledger = Ledger(self.path)
         self.server = RecordedDirectory()
+        self.matcher = FakeMatcher()
         self.clock = Clock()
 
     async def asyncTearDown(self):
@@ -56,6 +62,7 @@ class CacheTestCase(unittest.IsolatedAsyncioTestCase):
         return CacheManager(
             ledger=ledger or self.ledger,
             directory=self.server,
+            matcher=self.matcher,
             config=config(**overrides),
             clock=self.clock,
         )
@@ -92,7 +99,6 @@ class RefreshTests(CacheTestCase):
 
         self.assertEqual(len(caches.people), 13)
         self.assertEqual(len(caches.projects), 12)
-        self.assertEqual(caches.departments[0], "TOC")
 
         snap = self.ledger.latest_cache_snapshot("people")
         self.assertEqual(snap["item_count"], 13)
@@ -102,12 +108,15 @@ class RefreshTests(CacheTestCase):
     async def test_resolution_through_manager(self):
         caches = self.manager()
         await caches.refresh()
-        people = caches.resolve_people("Ramon / @user_two", None)
+        self.matcher.contacts = {
+            "ramon": resolved("c-ramon", "Ramon Dela Cruz"),
+            "@user_two": resolved("c-two", "Two"),
+        }
+        people = await caches.resolve_people("Ramon / @user_two", None)
         self.assertEqual(len(people.assigned), 2)
-        self.assertEqual(people.cc, [PRIYA])
-        self.assertEqual(caches.resolve_project("MFG - TOC").code, "MFG")
-        self.assertEqual(caches.resolve_department("TO").department, "TOC")
-        self.assertEqual(caches.resolve_department("XX").findings[0].code, "unknown_department")
+        self.assertEqual(people.cc, [])  # the API adds the standing cc
+        self.matcher.projects = {"mfg - toc": project("proj-mfg", "MFG")}
+        self.assertEqual((await caches.resolve_project("MFG - TOC", None)).code, "MFG")
 
     async def test_snapshot_loads_after_restart_before_live_refresh(self):
         await self.manager().refresh()
@@ -116,7 +125,7 @@ class RefreshTests(CacheTestCase):
         restarted.load_persisted()
         self.assertTrue(restarted.ready)
         self.assertEqual(len(restarted.people), 13)
-        self.assertEqual(self.server.calls, ["people", "projects", "departments"])  # none after
+        self.assertEqual(self.server.calls, ["people", "projects"])  # none after
 
     async def test_failed_refresh_keeps_snapshot_and_alerts_once_after_24h(self):
         caches = self.manager()
@@ -130,7 +139,7 @@ class RefreshTests(CacheTestCase):
 
         self.clock.advance(19)  # 25h since the last success
         stale = await caches.refresh()
-        self.assertEqual(sorted(s.kind for s in stale), ["departments", "people", "projects"])
+        self.assertEqual(sorted(s.kind for s in stale), ["people", "projects"])
         self.assertEqual(stale[0].fetched_at, "2026-10-22T00:00:00Z")
         self.assertEqual(stale[0].hours_stale, 25.0)
         self.assertIn("503", stale[0].error)
@@ -142,7 +151,7 @@ class RefreshTests(CacheTestCase):
         await caches.refresh()
         self.server.fail = True
         self.clock.advance(25)
-        self.assertEqual(len(await caches.refresh()), 3)  # a new episode alerts again
+        self.assertEqual(len(await caches.refresh()), 2)  # a new episode alerts again
 
     async def test_empty_refresh_is_a_failure_and_not_persisted(self):
         caches = self.manager()
@@ -179,12 +188,11 @@ class EmptyCacheHoldTests(CacheTestCase):
         self.server.fail = True
         caches = self.manager()
         telegram = FakeTelegram([update(10, message_id=1, text="MFG - TOC - JO #74")])
-        notion_writer = FakeNotion()
+        notion_writer = FakeJobOrders()
         classifier = FakeClassifier()
         worker = Worker(
             ledger=self.ledger,
             telegram=telegram,
-            notion=notion_writer,
             job_orders=notion_writer,
             classifier=classifier,
             config=config(),

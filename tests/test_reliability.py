@@ -17,11 +17,18 @@ from zoneinfo import ZoneInfo
 from jo_watchdog.app import __main__, healthcheck
 from jo_watchdog.app.worker import DeadmanExit
 from jo_watchdog.core.heartbeat import heartbeat_window
-from jo_watchdog.core.resolve import DepartmentResolution, PeopleResolution, ProjectResolution
+from jo_watchdog.core.resolve import PeopleResolution, ProjectResolution
 from jo_watchdog.ledger.db import Ledger, OutboxMessage, fmt_utc
 from jo_watchdog.ledger.migrations import MIGRATIONS
 from tests.clockwork import KEY, OWNER, Crash, FakeClock, Pipeline
-from tests.fakes import FakeClassifier, FakeNotion, FakeTelegram, failed_result, ok_result, update
+from tests.fakes import (
+    FakeClassifier,
+    FakeJobOrders,
+    FakeTelegram,
+    failed_result,
+    ok_result,
+    update,
+)
 
 CHANNEL = {
     "type": "channel",
@@ -42,7 +49,7 @@ class RateLimited(Exception):
 
 class RetryScheduleTests(unittest.IsolatedAsyncioTestCase):
     async def test_notion_write_retries_at_30s_2m_5m_10m_then_gives_up_once(self):
-        notion = FakeNotion(fail_create=True)
+        notion = FakeJobOrders(fail_create=True)
         p = Pipeline(self, [jo()], notion=notion)
         start = p.clock()
         attempt_times = []
@@ -106,7 +113,7 @@ class RetryScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p.ledger._conn.execute("SELECT COUNT(*) FROM llm_calls").fetchone()[0], 5)
 
     async def test_retry_after_stretches_a_short_delay(self):
-        notion = FakeNotion(fail_create=True, create_error=RateLimited(600))
+        notion = FakeJobOrders(fail_create=True, create_error=RateLimited(600))
         p = Pipeline(self, [jo()], notion=notion)
         await p.worker.run_once()
         self.assertEqual(
@@ -176,7 +183,7 @@ class RetryScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(row["next_attempt_at"])
 
     async def test_a_successful_state_change_resets_the_attempt_counter(self):
-        notion = FakeNotion(fail_retrieve=2)
+        notion = FakeJobOrders(fail_retrieve=2)
         p = Pipeline(self, [jo()], notion=notion)
         await p.worker.run_once()  # create works, read-back fails
         row = p.message()
@@ -191,25 +198,25 @@ class RetryScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((row["state"], row["attempts"]), ("done", 0))
 
     async def test_read_back_failure_retries_only_the_retrieve(self):
-        notion = FakeNotion(fail_retrieve=1)
+        notion = FakeJobOrders(fail_retrieve=1)
         p = Pipeline(self, [jo()], notion=notion)
         await p.worker.run_once()
         p.clock.advance(seconds=30)
         await p.worker.run_once()
         self.assertEqual(p.message()["state"], "done")
-        self.assertEqual(notion.create_calls, 1)  # never a second create
-        self.assertEqual(notion.find_calls, 0)  # nor a Telegram Key query
+        self.assertEqual(notion.create_calls, 1)  # never a second raise
+        self.assertEqual(notion.find_calls, 1)  # the one check before the raise, never again
         self.assertEqual(len(notion.pages), 1)
 
-    async def test_normal_success_never_queries_by_telegram_key(self):
-        notion = FakeNotion()
+    async def test_normal_success_asks_jo_find_once_before_the_raise(self):
+        notion = FakeJobOrders()
         p = Pipeline(self, [jo()], notion=notion)
         await p.cycles(2)
         self.assertEqual(p.message()["state"], "done")
-        self.assertEqual(notion.find_calls, 0)
+        self.assertEqual(notion.find_calls, 1)
 
     async def test_read_back_exhaustion_names_its_step(self):
-        notion = FakeNotion(fail_retrieve=99)
+        notion = FakeJobOrders(fail_retrieve=99)
         p = Pipeline(self, [jo()], notion=notion)
         for delay in (30, 120, 300, 600, 600):
             await p.worker.run_once()
@@ -219,16 +226,10 @@ class RetryScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p.message()["notion_page_id"], "page-1")
 
     async def test_reconciliation_failure_names_its_step(self):
-        class CrashAfterCreate(FakeNotion):
-            async def create_page(self, payload):
-                await super().create_page(payload)
-                raise Crash
-
-        notion = CrashAfterCreate(fail_find=99)
+        notion = FakeJobOrders(fail_find=99)
         p = Pipeline(self, [jo()], notion=notion)
-        with self.assertRaises(Crash):
-            await p.worker.run_once()
-        p.start()
+        await p.worker.run_once()
+        self.assertEqual(notion.created, [])  # nothing is raised while `jo find` cannot answer
         for delay in (30, 120, 300, 600, 600):
             p.clock.advance(seconds=delay)
             await p.worker.run_once()
@@ -264,12 +265,17 @@ class RetryScheduleTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(p.outbox("outage_alert"), [])
         caches.ready = True
-        caches.settings = SimpleNamespace(department_aliases={})
         caches.contact_for_telegram_user = lambda *a: None
-        caches.departments = ["TOC"]
-        caches.resolve_people = lambda *a: PeopleResolution()
-        caches.resolve_project = lambda raw: ProjectResolution(page_id="proj")
-        caches.resolve_department = lambda raw: DepartmentResolution(department="TOC")
+
+        async def resolve_people(*args):
+            return PeopleResolution()
+
+        caches.resolve_people = resolve_people
+
+        async def resolve_project(header, raw):
+            return ProjectResolution(page_id="proj")
+
+        caches.resolve_project = resolve_project
         await p.worker.run_once()
         self.assertEqual(p.message()["state"], "done")
 
@@ -298,7 +304,7 @@ class ReactionTests(unittest.IsolatedAsyncioTestCase):
 
 class ManualRetryTests(unittest.IsolatedAsyncioTestCase):
     async def exhausted(self, **kwargs):
-        notion = FakeNotion(fail_create=True)
+        notion = FakeJobOrders(fail_create=True)
         p = Pipeline(self, [jo(1, 42), jo(2, 43)], notion=notion, **kwargs)
         for delay in (30, 120, 300, 600, 600):
             await p.worker.run_once()
@@ -354,7 +360,7 @@ class RetryCommandTests(unittest.TestCase):
         self.config = self.dir / "config.yaml"
         self.config.write_text(
             "intake_chat_id: -100123\nintake_topic_id: 5\nops_chat_id: -100999\n"
-            "ops_topic_id: 7\njob_orders_data_source_id: ds-1\n"
+            "ops_topic_id: 7\n"
             f"ledger_path: {self.ledger_path}\n"
         )
         ledger = Ledger(self.ledger_path)
@@ -393,9 +399,9 @@ class RetryCommandTests(unittest.TestCase):
         self.assertEqual(__main__.main(["retry", "-1:1", "--config", str(self.config)]), 1)
 
 
-class CrashAfterCreateNotion(FakeNotion):
-    async def create_page(self, payload):
-        await super().create_page(payload)
+class CrashAfterCreateNotion(FakeJobOrders):
+    async def confirm_job_order(self, inputs, token):
+        await super().confirm_job_order(inputs, token)
         raise Crash
 
 
@@ -415,21 +421,21 @@ class WritingRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_recovery_waits_for_the_first_retry_delay_then_adopts_the_row(self):
         p, notion = await self.crashed_after_create()
         await p.worker.run_once()
-        self.assertEqual(notion.find_calls, 0)  # too soon: the create may still be landing
+        self.assertEqual(notion.find_calls, 1)  # too soon: the raise may still be landing
         p.clock.advance(seconds=29)
         await p.worker.run_once()
-        self.assertEqual(notion.find_calls, 0)
+        self.assertEqual(notion.find_calls, 1)
         p.clock.advance(seconds=1)
         await p.worker.run_once()
-        self.assertEqual(notion.find_calls, 1)
+        self.assertEqual(notion.find_calls, 2)
         row = p.message()
         self.assertEqual((row["state"], row["notion_page_id"]), ("done", "page-1"))
         self.assertEqual(len(notion.pages), 1)
         self.assertEqual(notion.create_calls, 1)  # adopted, not created again
 
     async def test_recovery_creates_only_when_no_row_exists(self):
-        class CrashBeforeCreate(FakeNotion):
-            async def create_page(self, payload):
+        class CrashBeforeCreate(FakeJobOrders):
+            async def confirm_job_order(self, inputs, token):
                 self.create_calls += 1
                 raise Crash
 
@@ -439,17 +445,17 @@ class WritingRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await p.worker.run_once()
         self.assertEqual(notion.pages, {})
         p.start()
-        notion.__class__ = FakeNotion  # the dependency is healthy again
+        notion.__class__ = FakeJobOrders  # the dependency is healthy again
         p.clock.advance(seconds=30)
         await p.worker.run_once()
-        self.assertEqual(notion.find_calls, 1)
+        self.assertEqual(notion.find_calls, 2)
         self.assertEqual(len(notion.pages), 1)
         self.assertEqual(p.message()["state"], "done")
 
     async def test_multiple_matches_are_reported_and_never_merged_or_deleted(self):
         p, notion = await self.crashed_after_create()
         duplicate = json.loads(json.dumps(notion.pages["page-1"]))
-        duplicate["id"], duplicate["url"] = "page-9", "https://notion.example/page-9"
+        duplicate["id"], duplicate["url"] = "page-9", "https://www.notion.so/page9"
         notion.pages["page-9"] = duplicate
         p.clock.advance(seconds=30)
         await p.worker.run_once()
@@ -458,8 +464,8 @@ class WritingRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sorted(notion.pages), ["page-1", "page-9"])  # nothing removed
         (report,) = p.outbox("capture_report")
         self.assertIn("More than one Notion row has this Telegram Key", report["text"])
-        self.assertIn("notion.example/page-1", report["text"])
-        self.assertIn("notion.example/page-9", report["text"])
+        self.assertIn("www.notion.so/page1", report["text"])
+        self.assertIn("www.notion.so/page9", report["text"])
 
 
 class LivenessTests(unittest.IsolatedAsyncioTestCase):
@@ -580,7 +586,6 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
                     "Flagged: 1",
                     "Ignored (not a JO): 1",
                     "No-text forwards: 1",
-                    "Passwords withheld: 1",
                     "Reaction failed: 0",
                     "",
                     "Deliverables linked: 0",
@@ -590,8 +595,8 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
                     "",
                     "Queue: 0 stuck, 0 pending retry, 0 ops posts failed",
                     "",
-                    "Ignored, first lines:",
-                    '"lunch at noon?"',
+                    "Ignored, message ids:",
+                    "13",
                 ]
             ),
         )
@@ -659,7 +664,7 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after["reaction_failed"], before["reaction_failed"] + 1)
 
     async def test_stuck_pending_and_failed_ops_posts_show_in_the_queue_line(self):
-        notion = FakeNotion(fail_create=True)
+        notion = FakeJobOrders(fail_create=True)
         p = Pipeline(self, [jo(1, 42), jo(2, 43)], notion=notion)
         await p.worker.run_once()
         p.ledger._conn.execute(

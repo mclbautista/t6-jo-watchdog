@@ -7,12 +7,10 @@ from jo_watchdog.core.duplicates import (
     EarlierCapture,
     append_watchdog_line,
     find_duplicate,
-    jo_key,
     notes_line,
     text_sha256,
 )
 from jo_watchdog.core.edits import EditAction, decide_edit
-from jo_watchdog.core.header import parse_header, parse_number
 
 NOW = datetime(2026, 9, 20, 4, 0, tzinfo=UTC)
 KEY = "proj-page|74"
@@ -39,23 +37,6 @@ def find(text, earlier, key=KEY):
 
 
 class KeyTests(unittest.TestCase):
-    def test_hash_and_leading_zero_variants_give_one_integer(self):
-        # #21's parser keeps the posted digits; the key uses their integer value.
-        for raw in ("JO #074", "#074", "074", "74", "JO 0074"):
-            with self.subTest(raw):
-                self.assertEqual(int(parse_number(raw)), 74)
-        headers = ["MFG - TOC - JO #074", "MFG - TOC - #74", "MFG-TOC-JO 0074"]
-        numbers = {parse_header(h, {}).jo_number_int for h in headers}
-        self.assertEqual(numbers, {74})
-        self.assertEqual(parse_header(headers[0], {}).jo_number, "#074")
-
-    def test_jo_key_is_project_and_number(self):
-        # #93: one JO counter per project; the Department is not in the key.
-        self.assertEqual(jo_key("p", 74), "p|74")
-        self.assertEqual(jo_key("p", 0), "p|0")
-        self.assertIsNone(jo_key(None, 74))
-        self.assertIsNone(jo_key("p", None))
-
     def test_text_hash_ignores_whitespace_differences(self):
         self.assertEqual(text_sha256("a  b\n c "), text_sha256("a b c"))
         self.assertNotEqual(text_sha256("a b"), text_sha256("a c"))

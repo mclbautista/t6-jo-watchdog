@@ -1,44 +1,38 @@
-"""Pure core: the deterministic Job Order plan (#21).
+"""Pure core: the Job Order plan (#21).
 
-Turns a validated extraction into the exact Notion properties and body blocks
-for every Job Order field that needs no live relation resolution. The plan is
-stored before any write and replayed as-is: ``build_job_order_payload`` reads
-only the stored plan, never the extraction or the clock.
+Turns a validated extraction, plus the Name, number, Department, deadline and keys the t6 API
+returned for the message (``jo raise`` preview, #151), into the Notion-shaped properties and
+body blocks. The plan holds no rule of its own. It is stored before any write and replayed
+as-is: ``build_raise_fields`` (payload.py) reads only the stored plan, never the extraction
+or the clock.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
-from datetime import datetime, time
-from typing import Any, Protocol
+from datetime import datetime
+from typing import Any, Literal, Protocol
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
-from jo_watchdog.core.deadline import MANILA, DeadlineSource, resolve_deadline
 from jo_watchdog.core.extraction import is_subtitle_value
 from jo_watchdog.core.findings import ASAP, Finding
-from jo_watchdog.core.header import (
-    canonical_name,
-    normalize_department,
-    parse_header,
-    parse_number,
-)
-from jo_watchdog.core.masker import mask_text, outbound_text
 from jo_watchdog.core.payload import STATUS_NEEDS_INTAKE_REVIEW
 from jo_watchdog.core.plan import (
     BLOCK_LIMIT,
     NOTES_PROPERTY,
     WATCHDOG_NOTES_PROPERTY,
-    header_line_of,
     split_blocks,
 )
 from jo_watchdog.core.resolve import (
-    DepartmentResolution,
     PeopleResolution,
     ProjectResolution,
     relation_properties,
 )
+
+MANILA = ZoneInfo("Asia/Manila")
+DeadlineSource = Literal["stated", "shift", "fallback", "blank"]
 
 # Plans stored before #99 carried the watchdog block inside ``Notes`` behind this marker.
 LEGACY_WATCHDOG_MARKER = "— added by the watchdog —"
@@ -98,15 +92,37 @@ class PlanResolution(BaseModel):
     unresolved: list[UnresolvedMention] = Field(default_factory=list)
 
 
+class RaisePreview(BaseModel):
+    """What ``jo raise`` would write for a message: the API's Name, number, Department,
+    deadline and keys, and the token that confirms the raise (#151)."""
+
+    token: str
+    name: str | None = None
+    jo_number: str | None = None
+    department: str | None = None
+    deadline: str | None = None  # ISO-8601 with its offset
+    deadline_source: DeadlineSource = "blank"
+    deadline_findings: list[dict[str, Any]] = Field(default_factory=list)
+    department_findings: list[dict[str, Any]] = Field(default_factory=list)
+    telegram_key: str | None = None
+    duplicate_key: str | None = None
+
+
 class JobOrderPlan(BaseModel):
-    """The exact Notion payload pieces, stored at ``planned`` and replayed unchanged."""
+    """The Notion-shaped pieces, stored at ``planned`` and replayed unchanged."""
 
     telegram_key: str
     name: str
     properties: dict[str, Any]
     body_blocks: list[str] = Field(default_factory=list)
-    jo_number_int: int | None = None
     deadline_source: DeadlineSource = "blank"
+    # The API's duplicate key for the message (``<Project page ID>|<number>``); None when it
+    # has no Project or no number. Plans stored before #151 have none.
+    duplicate_key: str | None = None
+    # The ``jo raise`` message input (``JoRaiseMessage``) this plan was previewed with; the
+    # write sends it again, so the API builds the rule fields again. None for a plan stored
+    # before #151: it is written with its own fields.
+    raise_message: dict | None = None
     findings: list[Finding] = Field(default_factory=list)
     # None when no caches are wired (nothing was resolved).
     resolution: PlanResolution | None = None
@@ -252,21 +268,21 @@ def rich_text(value: str) -> list[dict]:
 
 
 def _clean(value: str | None) -> str:
-    """Trim a verbatim field and mask it; absent values stay blank."""
+    """Trim a verbatim field; absent values stay blank."""
     if value is None:
         return ""
-    return outbound_text(value.replace("\xa0", " ").strip()).text
+    return value.replace("\xa0", " ").strip()
 
 
 def _verbatim(value: str | None) -> str:
-    """Mask a verbatim field but keep its whitespace and NBSP; trimming only decides emptiness."""
+    """A verbatim field with its whitespace and NBSP; trimming only decides emptiness."""
     if value is None or not value.strip():
         return ""
-    return outbound_text(value).text
+    return value
 
 
 def build_notes(poster_notes: str | None) -> str:
-    """The coordinator's own notes, verbatim (masked), for the ``Notes`` column."""
+    """The coordinator's own notes, verbatim, for the ``Notes`` column."""
     return _verbatim(poster_notes)
 
 
@@ -287,58 +303,41 @@ def build_watchdog_notes(deadline_raw: str | None, asap: bool) -> str:
 def plan_job_order(
     extraction: Extraction,
     *,
+    rules: RaisePreview,
     telegram_key: str,
     raw_text: str,
     posted_at: datetime,
     source_block: str,
-    department_aliases: Mapping[str, str],
-    department_resolution: DepartmentResolution | None = None,
-    assignee_shifts: Sequence[tuple[str, str | time | None]] = (),
+    raise_message: dict | None = None,
 ) -> JobOrderPlan:
-    """Build the deterministic plan for one Job Order.
+    """Build the plan for one Job Order.
 
-    ``posted_at`` is the intake posting or forwarding time, never the forwarded
-    original's time. ``source_block`` is the rendered provenance block (#24's
-    ``provenance.source_block``); it is masked here like all source text.
-    ``department_resolution`` and ``assignee_shifts`` come from the
-    resolution slice (#22). The resolved live option spelling is authoritative
-    for Department and the canonical Name; ``None`` means validation has not run.
+    ``rules`` is the API's answer for the message (the ``jo raise`` preview): the plan takes
+    its Name, number, Department, deadline and keys as they are. ``posted_at`` is the intake
+    posting or forwarding time, never the forwarded original's time. ``source_block`` is the
+    rendered provenance block (#24's ``provenance.source_block``). The API withholds credentials
+    from what it writes, so the text is kept as posted.
     """
-    # The posted first line is authoritative; the extracted header is never trusted over it.
-    header_raw = header_line_of(raw_text)
-    header = parse_header(header_raw, department_aliases)
-
-    department: str | None = None
-    if header is not None:
-        department = header.department
-    elif extraction.department_raw and extraction.department_raw.strip():
-        department = normalize_department(extraction.department_raw, department_aliases)
-    if department_resolution is not None:
-        department = department_resolution.department
-
-    digits = header.number if header is not None else parse_number(extraction.jo_number_raw)
-
-    if department_resolution is not None and department is None:
-        name_header = None
-    else:
-        name_header = header
-    name = outbound_text(canonical_name(name_header, header_raw, department)).text
-
-    deadline = resolve_deadline(extraction.deadline_raw, posted_at, assignee_shifts)
-    asap = any(f.code == ASAP for f in deadline.findings)
+    name = rules.name or ""
+    key = rules.telegram_key or telegram_key
+    deadline = datetime.fromisoformat(rules.deadline) if rules.deadline else None
+    findings = [
+        Finding(code=f["code"], params=f.get("params") or {}) for f in rules.deadline_findings
+    ]
+    asap = any(f.code == ASAP for f in findings)
 
     properties: dict[str, Any] = {
         "Name": {"title": rich_text(name)},
-        "Telegram Key": {"rich_text": rich_text(telegram_key)},
+        "Telegram Key": {"rich_text": rich_text(key)},
         "Status": {"status": {"name": STATUS_NEEDS_INTAKE_REVIEW}},
         "Date": notion_date(posted_at),
     }
-    if digits is not None:
-        properties["JO Number"] = {"rich_text": rich_text(f"#{digits}")}
-    if department:
-        properties["Department"] = {"select": {"name": department}}
-    if deadline.deadline is not None:
-        properties["Deadline"] = notion_date(deadline.deadline)
+    if rules.jo_number:
+        properties["JO Number"] = {"rich_text": rich_text(rules.jo_number)}
+    if rules.department:
+        properties["Department"] = {"select": {"name": rules.department}}
+    if deadline is not None:
+        properties["Deadline"] = notion_date(deadline)
     for field, prop in TEXT_PROPERTIES.items():
         raw_value = getattr(extraction, field)
         value = _verbatim(raw_value) if field == "title" else _clean(raw_value)
@@ -355,18 +354,19 @@ def plan_job_order(
         properties[WATCHDOG_NOTES_PROPERTY] = {"rich_text": rich_text(watchdog_notes)}
 
     body = [
-        *split_blocks(outbound_text(source_block).text),
-        *split_blocks(outbound_text(raw_text).text),
+        *split_blocks(source_block),
+        *split_blocks(raw_text),
     ]
 
     return JobOrderPlan(
-        telegram_key=telegram_key,
+        telegram_key=key,
         name=name,
         properties=properties,
         body_blocks=body,
-        jo_number_int=int(digits) if digits is not None else None,
-        deadline_source=deadline.source,
-        findings=deadline.findings,
+        deadline_source=rules.deadline_source,
+        duplicate_key=rules.duplicate_key,
+        raise_message=raise_message,
+        findings=findings,
     )
 
 
@@ -375,13 +375,17 @@ def apply_resolution(
     *,
     people: PeopleResolution,
     project: ProjectResolution,
-    department: DepartmentResolution,
+    department: str | None,
+    department_findings: list[Finding],
 ) -> None:
-    """Merge the #22 resolution into the plan: relations, findings and the stored decision."""
+    """Merge the #22 resolution into the plan: relations, findings and the stored decision.
+
+    ``department`` and its findings are the API's (the ``jo raise`` preview).
+    """
     plan.properties.update(relation_properties(people, project))
     plan.resolution = PlanResolution(
         project_page_id=project.page_id,
-        department=department.department,
+        department=department,
         assigned=list(people.assigned),
         cc=list(people.cc),
         unresolved=[
@@ -392,22 +396,6 @@ def apply_resolution(
     )
     plan.findings.extend(
         Finding(code=f.code, params=dict(f.params))
-        for f in (*people.findings, *project.findings, *department.findings)
+        for f in (*people.findings, *project.findings)
     )
-
-
-def build_job_order_payload(plan: JobOrderPlan, *, data_source_id: str) -> dict:
-    """The exact create-page payload, built only from the stored plan."""
-    children = [
-        {
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {"rich_text": rich_text(mask_text(block))},
-        }
-        for block in plan.body_blocks
-    ]
-    return {
-        "parent": {"data_source_id": data_source_id},
-        "properties": normalize_date_properties(plan.properties),
-        "children": children,
-    }
+    plan.findings.extend(department_findings)

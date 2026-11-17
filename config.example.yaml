@@ -1,6 +1,5 @@
 # Non-secret configuration. Copy to config.yaml and fill in the real values.
-# Secrets (TELEGRAM_BOT_TOKEN, NOTION_API_KEY, DEEPSEEK_API_KEY,
-# OPENROUTER_API_KEY) go in .env, never here.
+# Secrets (TELEGRAM_BOT_TOKEN, T6_API_SECRET) go in .env, never here.
 #
 # Every key is validated at startup; a bad or unknown key fails the boot.
 # Values marked FILL IN are placeholders the service must not run with.
@@ -14,37 +13,38 @@ flagged_reaction: "🤔"              # captured with any finding; also from tha
 # --- Telegram transport (#95) ---
 telegram_mode: direct               # direct = poll Telegram with TELEGRAM_BOT_TOKEN;
                                     # gateway = read and post through the Sixto gateway
-gateway_url: null                   # gateway mode only, e.g. "http://192.168.88.151:8780"
+gateway_url: null                   # gateway mode only, e.g. "http://gateway.example:8780"
 
 # --- Polling (#18) ---
 poll_timeout: 50                    # Telegram long-poll timeout (seconds, max 50)
 poll_interval: 1.0                  # pause between poll+drain cycles (seconds)
 
-# --- Notion (#18) ---
-job_orders_data_source_id: "3d8fb4d5-9e59-8073-a0d0-000b77632947"
-notion_version: "2026-03-11"        # pinned API version (do not change casually)
-
 # --- Ledger (#18) ---
 ledger_path: "./data/ledger.db"     # the container uses /app/data (a named volume)
 
-# --- DeepSeek classify/extract (#20) ---
-deepseek_base_url: "https://api.deepseek.com"
-deepseek_model: "deepseek-chat"     # the "latest" alias; never pin a dated model
-deepseek_timeout_seconds: 60
+# --- Classify/extract through the t6 API (`llm run`) ---
+llm_model_hint: "deepseek-chat"     # the API's provider model; the "latest" alias, never a dated pin
+llm_timeout_seconds: 70             # at least 70: the API waits up to 60 s for the provider
 
-# --- Planning (#21) ---
-department_aliases:                 # header token -> Notion Department option
-  TO: TOC
+# --- Filter before extraction (#153) ---
+# Which t6-core filter rule (`llm filter`) applies to which chat and topic. Only the rule's name
+# is here; its question and thresholds live in t6-core. Left out, the intake topic is filtered
+# with `job_order`; `filters: []` filters nothing.
+# To name entries: filters: [{chat_id: -1000000000000, topic_id: 2, rule: job_order}]
+filters: null
+# Count first: false stores the verdict and still extracts every message. Read
+# `python -m jo_watchdog.app filter-report` (drop against jo) before setting true.
+filter_drops: false
+
+# --- Job Orders (#134, #151) ---
+# The Department rules (aliases, live options) run in the t6 API (T6_DEPARTMENT_ALIASES there).
+# An old department_aliases key still boots and is ignored.
+raise_poll_seconds: 60              # how long to wait for the page of a raised Job Order
 
 # --- Resolution and caches (#22) ---
-contacts_data_source_id: "77b2a701-71db-4e88-a694-37f07303e77e"
-projects_data_source_id: "cc1dc02a-8f32-4c97-81e4-dc1e08d7f134"
-standing_cc_contact_page_id: "00000000-0000-0000-0000-000000000000"  # FILL IN: Contacts page id of the standing cc on every JO
+# The standing cc on every Job Order is added by the t6 API (T6_STANDING_CC there).
 cache_refresh_hours: 6
 cache_stale_alert_hours: 24
-fuzzy_min_score: 90
-fuzzy_min_lead: 8
-honorifics: [ate, kuya, sir]
 
 # --- Ops reporting (#23) ---
 ops_chat_id: -1000000000001         # FILL IN: the ops supergroup's chat id
@@ -60,11 +60,7 @@ deadman_stale_minutes: 10
 heartbeat_time: "07:00"
 timezone: "Asia/Manila"
 
-# --- Deliverable matching via Jev (#26) ---
-deliverables_data_source_id: "0a4ff084-3138-429c-8dbe-4d802aded74f"
-jev_url: "https://openrouter.ai/api/alpha/decisions"
-jev_model: "~typesafe/jev-latest"   # OpenRouter's alias; the leading ~ matters
-jev_timeout_seconds: 30
+# --- Deliverable matching through the t6 API's `llm decide` (#26, #147) ---
 t_link: 0.90
 t_hint: 0.50
 deliverable_link_enabled: false     # shadow mode until the owner turns it on

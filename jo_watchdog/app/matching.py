@@ -1,4 +1,4 @@
-"""The Deliverable match stage: live candidates, one Jev call, one inline retry.
+"""The Deliverable match stage: live candidates, one ``llm decide`` call, one inline retry.
 
 Runs after extraction and Project resolution and before the one Notion write
 (#26). It never raises: any failure becomes ``outcome = "skipped"`` with a
@@ -14,12 +14,11 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from jo_watchdog.adapters.jev import PROMPT_TAG, MatcherError, MatchEvidence
 from jo_watchdog.adapters.protocols import DeliverableMatcher, DeliverableSource
+from jo_watchdog.adapters.t6decide import PROMPT_TAG, REQUESTED_MODEL, MatcherError
 from jo_watchdog.app.config import Config
-from jo_watchdog.core.masker import MASKER_VERSION, mask_text, outbound_text
 from jo_watchdog.core.matching import (
     MATCHER_SKIPPED_LINE,
     Candidate,
@@ -30,8 +29,11 @@ from jo_watchdog.core.matching import (
     deliverable_property,
     hint_line,
 )
+from jo_watchdog.core.safe_error import describe_validation_error
 
 MAX_ATTEMPTS = 2  # the call plus one inline retry
+# The model inputs are masked by the t6 API, not by the watchdog; ``llm_calls`` records who.
+MASKED_BY = "t6-api"
 
 Sleep = Callable[[float], Awaitable[None]]
 
@@ -54,7 +56,7 @@ class LlmCallRecord(BaseModel):
     requested_model: str
     returned_model: str | None = None
     prompt_tag: str
-    masker_version: str = MASKER_VERSION
+    masker_version: str = MASKED_BY
     input_tokens: int | None = None
     output_tokens: int | None = None
     latency_ms: int
@@ -114,9 +116,7 @@ async def run_match_stage(
     candidates: list[Candidate] | None = None
     for _ in range(MAX_ATTEMPTS):
         try:
-            candidates = await deliverables.query_project_deliverables(
-                config.deliverables_data_source_id, project.page_id
-            )
+            candidates = await deliverables.deliverable_candidates(project.page_id)
             break
         except Exception:
             continue
@@ -130,13 +130,12 @@ async def run_match_stage(
             project=project,
         )
 
-    state = outbound_text(source_text).text
     calls: list[LlmCallRecord] = []
     for attempt in range(MAX_ATTEMPTS):
         started = clock()
         result: MatchResult | None = None
         try:
-            result = await matcher.match(state, project.name, candidates)
+            result = await matcher.match(source_text, project.name, candidates)
             decision = decide(
                 candidates,
                 result,
@@ -145,7 +144,7 @@ async def run_match_stage(
                 link_enabled=link_enabled,
             )
         except Exception as exc:
-            calls.append(_failed_call(config, project, candidates, exc, clock() - started, result))
+            calls.append(_failed_call(project, candidates, exc, clock() - started, result))
             if attempt + 1 < MAX_ATTEMPTS:
                 wait = exc.retry_after if isinstance(exc, MatcherError) else None
                 if wait:
@@ -186,18 +185,12 @@ def _detail(
     project: ResolvedProject,
     candidates: list[Candidate],
     result: MatchResult | None,
-    evidence: MatchEvidence | None = None,
 ) -> str:
     probs: dict[str, dict[str, float]] = {}
     if result:
         probs = {
             d.page_id: {"p_match": d.p_match, "p_maybe": d.p_maybe, "p_no": d.p_no}
             for d in result.decisions
-        }
-    elif evidence:
-        probs = {
-            page_id: {f"p_{k}": v for k, v in found.items()}
-            for page_id, found in evidence.probabilities.items()
         }
     return json.dumps(
         {
@@ -227,28 +220,31 @@ def _ok_call(
 
 
 def _failed_call(
-    config: Config,
     project: ResolvedProject,
     candidates: list[Candidate],
     exc: Exception,
     elapsed: float,
     result: MatchResult | None,
 ) -> LlmCallRecord:
-    """A failed attempt keeps whatever model, usage and probabilities were readable."""
+    """A failed attempt keeps the model and usage of an answer that was read but not usable."""
     failure = exc.failure if isinstance(exc, MatcherError) else "invalid_result"
-    evidence = exc.evidence if isinstance(exc, MatcherError) else None
     return LlmCallRecord(
-        requested_model=result.requested_model if result else config.jev_model,
-        returned_model=(
-            result.returned_model if result else evidence.returned_model if evidence else None
-        ),
+        requested_model=result.requested_model if result else REQUESTED_MODEL,
+        returned_model=result.returned_model if result else None,
         prompt_tag=PROMPT_TAG,
-        input_tokens=result.input_tokens if result else evidence.input_tokens if evidence else None,
-        output_tokens=(
-            result.output_tokens if result else evidence.output_tokens if evidence else None
-        ),
+        input_tokens=result.input_tokens if result else None,
+        output_tokens=result.output_tokens if result else None,
         latency_ms=round(elapsed * 1000),
         outcome=failure,
-        error=mask_text(str(exc))[:500],
-        detail_json=_detail(project, candidates, result, evidence),
+        error=_safe_error(exc),
+        detail_json=_detail(project, candidates, result),
     )
+
+
+def _safe_error(exc: Exception) -> str:
+    """A matcher error is text-free by construction; any other error is kept by class only."""
+    if isinstance(exc, MatcherError):
+        return str(exc)[:500]
+    if isinstance(exc, ValidationError):
+        return describe_validation_error(exc)
+    return type(exc).__name__

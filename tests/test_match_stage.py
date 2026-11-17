@@ -8,16 +8,15 @@ import json
 import unittest
 from pathlib import Path
 
-import httpx
+from t6.verbs import Done
 
-from jo_watchdog.adapters.jev import JevMatcher, MatcherError, MatchEvidence
+from jo_watchdog.adapters.t6api import raise_input
+from jo_watchdog.adapters.t6decide import MatcherError, T6DecideMatcher
 from jo_watchdog.app.config import Config
 from jo_watchdog.app.matching import ResolvedProject, run_match_stage, with_deliverable
-from jo_watchdog.core.masker import WITHHELD
+from jo_watchdog.core.job_order import JobOrderPlan
 from jo_watchdog.core.matching import Candidate, CandidateDecision, MatchResult
-from jo_watchdog.core.payload import build_notion_payload
-from jo_watchdog.core.plan import build_plan
-from tests.fakes import FakeNotion
+from tests.fakes import FakeDecideClient, FakeJobOrders
 
 PAIRS = json.loads(
     (Path(__file__).parent / "fixtures" / "jev" / "regression_pairs.json").read_text(
@@ -37,7 +36,6 @@ def config(**overrides) -> Config:
         intake_topic_id=5,
         ops_chat_id=-100456,
         ops_topic_id=7,
-        job_orders_data_source_id="ds-jo",
         **overrides,
     )
 
@@ -46,10 +44,10 @@ class FakeDeliverables:
     def __init__(self, candidates=(), *, failures: int = 0):
         self.candidates = list(candidates)
         self.failures = failures
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[str] = []
 
-    async def query_project_deliverables(self, data_source_id, project_page_id):
-        self.calls.append((data_source_id, project_page_id))
+    async def deliverable_candidates(self, project_page_id):
+        self.calls.append(project_page_id)
         if self.failures:
             self.failures -= 1
             raise RuntimeError("notion 503")
@@ -122,14 +120,14 @@ class EligibilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_candidates_come_from_the_resolved_project(self):
         source = FakeDeliverables(CANDS)
         await stage(FakeMatcher(LINKABLE), source)
-        self.assertEqual(source.calls, [("0a4ff084-3138-429c-8dbe-4d802aded74f", "proj-1")])
+        self.assertEqual(source.calls, ["proj-1"])
 
-    async def test_jev_gets_masked_text_and_project_name(self):
+    async def test_the_matcher_gets_the_text_as_posted_and_the_project_name(self):
+        # The t6 API masks the registered names and withholds the credentials.
         jev = FakeMatcher(LINKABLE)
         await stage(jev, text="Task: upload\nPW: hunter2-secret")
         state, project_name, candidates = jev.calls[0]
-        self.assertNotIn("hunter2-secret", state)
-        self.assertIn(WITHHELD, state)
+        self.assertEqual(state, "Task: upload\nPW: hunter2-secret")
         self.assertEqual(project_name, "Moonglow")
         self.assertEqual(candidates, CANDS)
 
@@ -195,22 +193,6 @@ class FailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail["candidates"][0]["p_match"], 0.95)
         self.assertNotIn("p_match", detail["candidates"][1])
 
-    async def test_matcher_error_evidence_is_stored_without_a_decision(self):
-        ev = MatchEvidence(
-            returned_model="m-1",
-            input_tokens=5,
-            output_tokens=6,
-            probabilities={"d-ftr": {"match": 0.7}},
-        )
-        err = MatcherError("invalid_body", "x", evidence=ev)
-        result = await stage(FakeMatcher(err, err))
-        call = result.llm_calls[0]
-        self.assertEqual(
-            (call.returned_model, call.input_tokens, call.output_tokens), ("m-1", 5, 6)
-        )
-        self.assertEqual(json.loads(call.detail_json)["candidates"][0]["p_match"], 0.7)
-        self.assertIsNone(result.decision)
-
     async def test_unexpected_exception_never_escapes(self):
         result = await stage(FakeMatcher(ValueError("bug"), KeyError("bug")))
         self.assertEqual(result.outcome, "skipped")
@@ -238,9 +220,13 @@ class FailureTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([f.code for f in result.findings], ["matcher_skipped"])
 
-    async def test_failure_error_text_is_masked(self):
-        result = await stage(FakeMatcher(RuntimeError("PW: leaked-secret"), RuntimeError("x")))
-        self.assertNotIn("leaked-secret", result.llm_calls[0].error)
+    async def test_a_matcher_failure_is_cut_to_500_characters_and_other_errors_keep_the_class(self):
+        from jo_watchdog.adapters.t6decide import MatcherError
+
+        result = await stage(FakeMatcher(MatcherError("timeout", "x" * 900), RuntimeError("y")))
+        self.assertEqual(len(result.llm_calls[0].error), 500)
+        result = await stage(FakeMatcher(RuntimeError("SECRET text"), RuntimeError("y")))
+        self.assertEqual(result.llm_calls[0].error, "RuntimeError")
 
 
 class StorageTests(unittest.IsolatedAsyncioTestCase):
@@ -279,10 +265,18 @@ class PipelineShapeTests(unittest.IsolatedAsyncioTestCase):
     """Matching feeds the one Notion write; it never blocks or adds a relation in shadow."""
 
     async def write(self, result) -> dict:
-        plan = build_plan(name="MG - TOC - JO #41", telegram_key="-100123:9", raw_text="JO text")
-        payload = with_deliverable(build_notion_payload(plan, data_source_id="ds-jo"), result)
-        notion = FakeNotion()
-        await notion.create_page(payload)
+        properties = {
+            "Name": {"title": [{"type": "text", "text": {"content": "MG - TOC - JO #41"}}]},
+            "Telegram Key": {"rich_text": [{"type": "text", "text": {"content": "-100123:9"}}]},
+            "Status": {"status": {"name": "Needs Intake Review"}},
+        }
+        plan = JobOrderPlan(
+            telegram_key="-100123:9",
+            name="MG - TOC - JO #41",
+            properties=with_deliverable({"properties": properties}, result)["properties"],
+        )
+        notion = FakeJobOrders()
+        await notion.confirm_job_order(raise_input(plan, "watchdog-jo--100123:9"), "token")
         return notion.created[0]
 
     async def test_shadow_mode_never_writes_a_relation(self):
@@ -306,27 +300,19 @@ class PipelineShapeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RegressionPairTests(unittest.IsolatedAsyncioTestCase):
-    """The three known real JO-to-Deliverable pairs, through the real adapter."""
+    """The three known real JO-to-Deliverable pairs, through the real adapter and a fake API."""
 
     async def run_pair(self, pair, *, link_enabled):
-        seen = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen["body"] = json.loads(request.content)
-            return httpx.Response(pair["response"]["status"], json=pair["response"]["body"])
-
-        jev = JevMatcher(api_key="k", transport=httpx.MockTransport(handler))
-        try:
-            result = await stage(
-                jev,
-                FakeDeliverables([Candidate(**c) for c in pair["candidates"]]),
-                project=ResolvedProject(**pair["project"]),
-                text=pair["source_text"],
-                deliverable_link_enabled=link_enabled,
-            )
-        finally:
-            await jev.close()
-        return result, seen["body"]
+        client = FakeDecideClient(Done(result=pair["response"]["body"]))
+        result = await stage(
+            T6DecideMatcher(client),
+            FakeDeliverables([Candidate(**c) for c in pair["candidates"]]),
+            project=ResolvedProject(**pair["project"]),
+            text=pair["source_text"],
+            deliverable_link_enabled=link_enabled,
+        )
+        [request] = client.requests
+        return result, request.model_dump()
 
     async def test_pairs(self):
         self.assertEqual(len(PAIRS), 3)

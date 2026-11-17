@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Manual real-account smoke verification (issue #27). Never run in CI.
 
-Checks the assumptions CI deliberately excludes: live Telegram, Notion, DeepSeek
-and Jev behavior, the deployment's storage permissions, and the full capture
-pipeline against real accounts. Each step prints PASS, FAIL, SKIP, MANUAL or
+Checks the assumptions CI deliberately excludes: live Telegram, the t6 API's reads and Job
+Order raise, extraction and Deliverable matching through it, the deployment's storage
+permissions, and the full capture pipeline against real accounts. Each step prints PASS, FAIL, SKIP, MANUAL or
 ATTESTED. The run ends with a verdict, and only FULL VERIFICATION exits 0:
 
-- FULL (exit 0): every required step is PASS or ATTESTED. Only ``unknown_select``
-  and ``live_telegram`` are optional.
+- FULL (exit 0): every required step is PASS or ATTESTED. Only ``live_telegram`` is optional.
 - FAILED (exit 1): any step failed.
 - INCOMPLETE or PARTIAL (exit 3): a required step was SKIP, MANUAL or not run, or
   ``--only`` ran a subset. A skipped check is never a success.
@@ -15,51 +14,40 @@ ATTESTED. The run ends with a verdict, and only FULL VERIFICATION exits 0:
     python smoke.py --config config.yaml                 # everything except live Telegram
     python smoke.py --config config.yaml --live-telegram --live-message-id 12345
     python smoke.py --config config.yaml --fixture-message-id 900001 --attestations att.json
-    python smoke.py --config config.yaml --only reactions,notion_access
+    python smoke.py --config config.yaml --only reactions,api_access
     python smoke.py --config config.yaml --forward-fixtures fw.json --reaction-message-id 12345
 
-Secrets come from the environment (``.env``): TELEGRAM_BOT_TOKEN,
-NOTION_API_KEY, DEEPSEEK_API_KEY, OPENROUTER_API_KEY.
+Secrets come from the environment (``.env``): TELEGRAM_BOT_TOKEN, T6_API_URL, T6_API_SECRET.
 
 Side effects, by step:
 
 - ``pipeline`` and ``dry_run`` build the worker with the production wiring
-  (``jo_watchdog.app.wiring``: caches, Jev matcher, Deliverable source) on a
+  (``jo_watchdog.app.wiring``: caches, matcher, Deliverable source) on a
   throwaway ledger, with a fixed classifier verdict and a recording Telegram.
   The fixture is one explicit message (``--fixture-message-id``, printed). The
-  step verifies that message's classification, plan, Notion write and read-back,
+  step verifies that message's classification, plan, Job Order raise and read-back,
   delivered capture report and ``reaction_state = set``, not the last ledger row.
-  ``pipeline`` creates one clearly marked Job Order (the integration cannot
-  archive it; the URL is printed so you can delete it by hand).
-- ``deepseek`` makes two live calls (a masked-credential text and a no-mask text) through
-  the production classifier; ``jev`` makes exactly one live Decisions request that holds
-  all three regression pairs (``tests/fixtures/jev/regression_pairs.json``), validated by
-  the production matcher. Both need explicit authorization and cost tokens. They print the
-  returned snapshot, token counts, probabilities and any ``Retry-After``/``X-RateLimit-*``
-  headers; a 429 is reported only if one actually came back.
-- ``threshold_tuning`` is offline: it scores the redacted corpus, rewrites
+  ``pipeline`` raises one clearly marked Job Order (the API cannot archive it; the
+  URL is printed so you can delete it by hand). ``query_visibility`` then asks ``jo find``
+  for that message until the Job Order shows.
+- ``api_access`` reads People, Projects and Departments through the t6 API and asks
+  ``jo find`` once; it fails when the API key cannot read one of them.
+- ``extraction`` makes two live ``llm run`` calls (a text with a credential and a text without)
+  through the production classifier; ``jev`` makes three live ``llm decide`` calls, one for each
+  regression pair (``tests/fixtures/jev/regression_pairs.json``), validated by the production
+  matcher. Both need explicit authorization and cost tokens. They print the returned snapshot,
+  token counts and probabilities; a refusal prints its class and any ``retry_after``.
+- ``threshold_tuning`` is offline: it scores the recorded ``llm decide`` answers, rewrites
   ``docs/tuning/threshold-results.json`` and stays MANUAL until the owner attests the
   review. It never edits config or enables linking.
-- ``unknown_select`` (only with ``--probe-unknown-select``) creates a second
-  marked Job Order with an unknown Department option, which Notion may add to
-  the schema; delete the option by hand if it does.
-- ``reciprocal_relation`` (only with ``--probe-relation-write``) creates a marked
-  Job Order whose Deliverable relation points at one Deliverable, then checks the
-  Deliverable's reciprocal side and a ``relation_contains`` query. The integration
-  cannot archive it; delete the row by hand (URL printed). Without the flag it
-  SKIPs, so a full verification needs it.
-- ``notion_retry_after`` (only with ``--probe-retry-after``) sends at most
-  ``--retry-after-requests`` (cap 100) schema reads, stops at the first 429 and
-  honours its Retry-After. No 429 inside the bound is MANUAL ("not observed"), never
-  a pass; it creates nothing to clean up. Without the flag it SKIPs.
 - ``live_telegram`` (only with ``--live-telegram --live-message-id N``) waits for
   the one intake post with that Telegram message id and ignores every other
   update. Post a test JO in the intake topic first and note its message id. It
   captures into a throwaway ledger (the service's ledger and offset are not
-  touched), writes a real Notion row, reacts to the post, posts the capture
+  touched), raises a real Job Order, reacts to the post, posts the capture
   report and one smoke line to the ops topic, then runs the same checks.
   Stop the running watchdog first: two pollers cannot share one bot token.
-  Cleanup: delete the Notion row by hand (URL printed) and the smoke line.
+  Cleanup: delete the Job Order row by hand (URL printed) and the smoke line.
 
 - ``forward_origins`` and ``channel_link`` read ``--forward-fixtures``: a JSON object
   keyed ``user``, ``hidden_user``, ``chat``, ``channel`` whose values are the raw Bot API
@@ -95,9 +83,7 @@ import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from jo_watchdog.adapters.notion import NotionAdapter, NotionError, QueryRequest
 from jo_watchdog.adapters.protocols import ClassifyResult, IncomingUpdate
-from jo_watchdog.app.caches import person_from_page
 from jo_watchdog.app.config import (
     SECRET_KEYS,
     Config,
@@ -105,9 +91,10 @@ from jo_watchdog.app.config import (
     missing_secrets,
     placeholder_keys,
     require_live_keys,
-    resolve_settings,
+    t6_api_secret,
+    t6_api_url,
 )
-from jo_watchdog.app.model_smoke import ModelCheck, check_deepseek, check_jev
+from jo_watchdog.app.model_smoke import ModelCheck, check_decide, check_extraction
 from jo_watchdog.app.smoke_gate import (
     FAIL,
     MANUAL,
@@ -119,12 +106,6 @@ from jo_watchdog.app.smoke_gate import (
     verdict,
     verify_capture,
 )
-from jo_watchdog.app.smoke_notion_probes import (
-    STATUS_OPTION,
-    check_schemas,
-    probe_reciprocal_relation,
-    probe_retry_after,
-)
 from jo_watchdog.app.smoke_probes import (
     evaluate_channel_link,
     evaluate_forward_origins,
@@ -133,29 +114,15 @@ from jo_watchdog.app.smoke_probes import (
     load_forward_fixtures,
 )
 from jo_watchdog.app.smoke_scenarios import SCENARIOS
-from jo_watchdog.app.tuning import (
-    assignee_mentions,
-    build_report,
-    fuzzy_cases,
-    match_samples,
-    read_report,
-    write_report,
-)
+from jo_watchdog.app.tuning import build_report, match_samples, read_report, write_report
 from jo_watchdog.app.wiring import build_adapters, build_worker, missing_wiring
 from jo_watchdog.core.extraction import EXTRACTED_FIELDS, PROMPT_TAG, Extraction
-from jo_watchdog.core.masker import WITHHELD, outbound_text
+from jo_watchdog.core.payload import page_url_for
 from jo_watchdog.core.report import DRY_RUN_HEADER
 from jo_watchdog.ledger.db import Ledger
 
 ROOT = Path(__file__).resolve().parent
 SMOKE_MARK = "SMOKE TEST — delete this row"
-
-# The three real JO-to-Deliverable pairs (deliverable-matching design, #26).
-JEV_REGRESSION_DELIVERABLES = [
-    "Moonglow FTR SCR",
-    "Show Hotel WK11 VFX",
-    "Mag-Iina FTR SCR",
-]
 
 
 class RecordingTelegram:
@@ -179,9 +146,9 @@ class RecordingTelegram:
 
 
 class AlwaysJoClassifier:
-    """Stands in for DeepSeek in the synthetic pipeline steps."""
+    """Stands in for the classifier in the synthetic pipeline steps."""
 
-    async def classify(self, masked_text: str, origin_lines) -> ClassifyResult:
+    async def classify(self, text: str, origin_lines) -> ClassifyResult:
         extraction = Extraction(
             verdict="jo",
             confidence="high",
@@ -230,56 +197,21 @@ class Smoke:
     def __init__(self, config: Config, args: argparse.Namespace):
         self.config = config
         self.args = args
-        self.notion: NotionAdapter | None = None
         self.bot = None
-        self.schemas: dict[str, dict] = {}
-        self.deliverable_ids: dict[str, str] = {}
         self.smoke_page_key: str | None = None
         self.attestations: dict = {}
         # One explicit identity for the synthetic fixture, printed so it can be traced.
         self.fixture_message_id = args.fixture_message_id or int(time.time() * 1000) % 2_000_000_000
 
     async def open(self) -> None:
-        if os.environ.get("NOTION_API_KEY"):
-            self.notion = NotionAdapter(os.environ["NOTION_API_KEY"])
         if os.environ.get("TELEGRAM_BOT_TOKEN"):
             from aiogram import Bot
 
             self.bot = Bot(token=os.environ["TELEGRAM_BOT_TOKEN"])
 
     async def close(self) -> None:
-        if self.notion:
-            await self.notion.close()
         if self.bot:
             await self.bot.session.close()
-
-    async def schema(self, data_source_id: str) -> dict:
-        if data_source_id not in self.schemas:
-            self.schemas[data_source_id] = await self.notion._request(
-                "GET", f"/data_sources/{data_source_id}"
-            )
-        return self.schemas[data_source_id]
-
-
-def _title_property(schema: dict) -> str:
-    return next(n for n, p in schema["properties"].items() if p["type"] == "title")
-
-
-def _plain(prop: dict) -> str:
-    kind = prop.get("type")
-    value = prop.get(kind)
-    if kind in ("title", "rich_text"):
-        return "".join(part.get("plain_text", "") for part in value or [])
-    if kind in ("select", "status"):
-        return (value or {}).get("name", "")
-    if kind == "multi_select":
-        return ", ".join(o["name"] for o in value or [])
-    if kind == "number" and value is not None:
-        return str(value)
-    if kind == "date" and value:
-        return value.get("start", "")
-    return ""
-
 
 # -- steps --------------------------------------------------------------------
 
@@ -337,7 +269,7 @@ async def step_reaction_apply(s: Smoke) -> Result:
     try:
         await adapters.telegram.set_reaction(chat_id, message_id, emoji)
     except Exception as exc:
-        return fail(f"{type(exc).__name__}: {outbound_text(str(exc)).text}")
+        return fail(f"{type(exc).__name__}: {exc}")
     finally:
         await adapters.close()
     return ok(
@@ -382,195 +314,28 @@ async def step_channel_link(s: Smoke) -> Result:
     return evaluate_channel_link(_forward_fixtures(s))
 
 
-async def step_notion_access(s: Smoke) -> Result:
-    if not s.notion:
-        return skip("NOTION_API_KEY not set")
-    names = {
-        "Job Orders": s.config.job_orders_data_source_id,
-        "Contacts": s.config.contacts_data_source_id,
-        "Projects": s.config.projects_data_source_id,
-        "Deliverables": s.config.deliverables_data_source_id,
-    }
-    denied = []
-    for label, ds in names.items():
-        try:
-            await s.schema(ds)
-            await s.notion.query_data_source(ds, QueryRequest(page_size=1))
-        except NotionError as exc:
-            denied.append(f"{label} ({exc.status} {exc.code})")
-    if denied:
-        return fail("integration cannot read: " + ", ".join(denied) + "; share them with it")
-    return ok("Job Orders, Contacts, Projects, Deliverables readable")
+class ReadOnlyApi:
+    """The real t6 API for reads and previews; a Job Order raise (confirm) is forbidden."""
 
-
-async def step_notion_schema(s: Smoke) -> Result:
-    if not s.notion:
-        return skip("NOTION_API_KEY not set")
-    ids = {
-        "Job Orders": s.config.job_orders_data_source_id,
-        "Contacts": s.config.contacts_data_source_id,
-        "Projects": s.config.projects_data_source_id,
-        "Deliverables": s.config.deliverables_data_source_id,
-    }
-    schemas = {label: await s.schema(ds) for label, ds in ids.items()}
-    jo, contacts = schemas["Job Orders"]["properties"], schemas["Contacts"]["properties"]
-    departments = [o["name"] for o in jo.get("Department", {}).get("select", {}).get("options", [])]
-    print(f"    Department options: {', '.join(departments) or '(none)'}")
-    print(f"    Contacts End of Shift type: {contacts.get('End of Shift', {}).get('type')}")
-    print(f"    Contacts Aliases type: {contacts.get('Aliases', {}).get('type')}")
-    problems = check_schemas(schemas, ids)
-    if problems:
-        return fail("; ".join(problems))
-    return ok("exact property names and types, relation targets, Status and Department present")
-
-
-async def step_deliverable_relation(s: Smoke) -> Result:
-    if not s.notion:
-        return skip("NOTION_API_KEY not set")
-    jo = (await s.schema(s.config.job_orders_data_source_id))["properties"]
-    target = s.config.deliverables_data_source_id.replace("-", "")
-    relations = [
-        (name, prop["relation"])
-        for name, prop in jo.items()
-        if prop["type"] == "relation"
-        and prop["relation"].get("data_source_id", "").replace("-", "") == target
-    ]
-    if not relations:
-        return fail("Job Orders has no relation to Deliverables")
-    name, relation = relations[0]
-    if relation.get("type") != "dual_property":
-        return fail(f"Job Orders.{name!r} is one-way ({relation.get('type')}), want reciprocal")
-    synced = relation["dual_property"].get("synced_property_name")
-    return ok(f"Job Orders.{name!r} <-> Deliverables.{synced!r} (reciprocal)")
-
-
-async def step_relation_contains(s: Smoke) -> Result:
-    if not s.notion:
-        return skip("NOTION_API_KEY not set")
-    jo_schema = await s.schema(s.config.job_orders_data_source_id)
-    dl_schema = await s.schema(s.config.deliverables_data_source_id)
-    dl_title = _title_property(dl_schema)
-    target = s.config.deliverables_data_source_id.replace("-", "")
-    relation = next(
-        (
-            n
-            for n, p in jo_schema["properties"].items()
-            if p["type"] == "relation"
-            and p["relation"].get("data_source_id", "").replace("-", "") == target
-        ),
-        None,
-    )
-    if relation is None:
-        return fail("no Job Orders -> Deliverables relation to filter on")
-    found = []
-    for name in JEV_REGRESSION_DELIVERABLES:
-        page = await s.notion.query_data_source(
-            s.config.deliverables_data_source_id,
-            QueryRequest(page_size=1, filter={"property": dl_title, "title": {"equals": name}}),
-        )
-        if not page.results:
-            continue
-        s.deliverable_ids[name] = page.results[0]["id"]
-        linked = await s.notion.query_data_source(
-            s.config.job_orders_data_source_id,
-            QueryRequest(
-                page_size=5,
-                filter={"property": relation, "relation": {"contains": page.results[0]["id"]}},
-            ),
-        )
-        found.append(f"{name}: {len(linked.results)} JO")
-    if not found:
-        return fail("none of the regression Deliverables were found by title")
-    if any(entry.endswith(": 0 JO") for entry in found):
-        return fail("relation_contains returned no JO for: " + "; ".join(found))
-    return ok("relation_contains works; " + "; ".join(found))
-
-
-async def step_reciprocal_relation(s: Smoke) -> Result:
-    """Write a Job Order -> Deliverable relation and read it back from both sides."""
-    if not getattr(s.args, "probe_relation_write", False):
-        return skip("pass --probe-relation-write (creates one marked Job Order)")
-    if not s.notion:
-        return skip("NOTION_API_KEY not set")
-    jo = (await s.schema(s.config.job_orders_data_source_id))["properties"]
-    target = s.config.deliverables_data_source_id.replace("-", "")
-    found = next(
-        (
-            (n, p["relation"])
-            for n, p in jo.items()
-            if p["type"] == "relation"
-            and p["relation"].get("data_source_id", "").replace("-", "") == target
-        ),
-        None,
-    )
-    if found is None or found[1].get("type") != "dual_property":
-        return fail("Job Orders has no reciprocal relation to Deliverables")
-    name, relation = found
-    deliverable_id = next(iter(s.deliverable_ids.values()), None)
-    if deliverable_id is None:
-        page = await s.notion.query_data_source(
-            s.config.deliverables_data_source_id, QueryRequest(page_size=1)
-        )
-        if not page.results:
-            return fail("Deliverables has no row to link the probe Job Order to")
-        deliverable_id = page.results[0]["id"]
-    return await probe_reciprocal_relation(
-        s.notion,
-        job_orders_ds=s.config.job_orders_data_source_id,
-        relation_name=name,
-        reciprocal_name=relation["dual_property"]["synced_property_name"],
-        deliverable_id=deliverable_id,
-    )
-
-
-async def step_notion_retry_after(s: Smoke) -> Result:
-    """Bounded burst of cheap schema reads to observe a real 429 and its Retry-After."""
-    if not getattr(s.args, "probe_retry_after", False):
-        return skip("pass --probe-retry-after (sends up to --retry-after-requests reads)")
-    if not s.notion:
-        return skip("NOTION_API_KEY not set")
-    return await probe_retry_after(
-        s.notion,
-        s.config.job_orders_data_source_id,
-        max_requests=getattr(s.args, "retry_after_requests", 40),
-    )
-
-
-async def step_masker(s: Smoke) -> Result:
-    cases = json.loads((ROOT / "tests/fixtures/masker_cases.json").read_text(encoding="utf-8"))
-    wrong = [
-        source
-        for source, expected, count in cases["positive"]
-        if outbound_text(source).text != expected or outbound_text(source).withheld_count != count
-    ]
-    leaked = [source for source in cases["negative"] if WITHHELD in outbound_text(source).text]
-    if wrong or leaked:
-        return fail(f"{len(wrong)} positive and {len(leaked)} negative cases failed")
-    return ok(f"{len(cases['positive'])} positive, {len(cases['negative'])} negative cases")
-
-
-class ReadOnlyNotion:
-    """Real Notion for cache refreshes and Deliverable lookups; page writes are forbidden."""
-
-    def __init__(self, notion):
-        self._notion = notion
+    def __init__(self, api):
+        self._api = api
 
     def __getattr__(self, name):
-        return getattr(self._notion, name)
+        return getattr(self._api, name)
 
-    async def create_page(self, payload):
-        raise AssertionError("dry run called Notion create")
+    async def confirm_job_order(self, inputs, token):
+        raise AssertionError("dry run called jo raise with a confirm")
 
-    async def retrieve_page(self, page_id):
-        raise AssertionError("dry run called Notion retrieve")
+    async def read_job_order(self, page_id):
+        raise AssertionError("dry run called jo get")
 
 
 async def synthetic_capture(s: Smoke, text: str, *, dry_run: bool) -> tuple[Result, object]:
     """Run one named fixture through the production-wired worker on an isolated ledger.
 
-    Real Notion, caches, Jev matcher and Deliverable source; only Telegram (a
-    recorder) and the classifier (a fixed verdict) are stood in, so the message's
-    own ledger, Notion and outbox facts can be checked.
+    The real t6 API (caches, matching, Job Order raise); only Telegram (a recorder) and the
+    classifier (a fixed verdict) are stood in, so the message's own ledger, Job Order and
+    outbox facts can be checked.
     """
     if missing_secrets():
         return skip(f"production wiring needs every secret; missing {missing_secrets()}"), None
@@ -579,8 +344,8 @@ async def synthetic_capture(s: Smoke, text: str, *, dry_run: bool) -> tuple[Resu
     config = s.config.model_copy(update={"dry_run": dry_run})
     telegram = RecordingTelegram([synthetic])
     adapters = build_adapters(config)
-    notion = ReadOnlyNotion(adapters.notion) if dry_run else adapters.notion
-    adapters = adapters.with_(telegram=telegram, classifier=AlwaysJoClassifier(), notion=notion)
+    api = ReadOnlyApi(adapters.t6api) if dry_run else adapters.t6api
+    adapters = adapters.with_(telegram=telegram, classifier=AlwaysJoClassifier(), t6api=api)
     with tempfile.TemporaryDirectory() as tmp:
         ledger = Ledger(Path(tmp) / "smoke.db")
         try:
@@ -604,18 +369,44 @@ async def synthetic_capture(s: Smoke, text: str, *, dry_run: bool) -> tuple[Resu
             msg = ledger.get_message(key)
             s.smoke_page_key = key if msg and msg["notion_page_id"] else None
             if msg and msg["notion_page_id"]:
-                page = await adapters.notion.retrieve_page(msg["notion_page_id"])
-                print(f"    created {page.get('url')} — delete it by hand")
+                page = await adapters.t6api.read_job_order(msg["notion_page_id"])
+                print(f"    created {page_url_for(msg['notion_page_id'])} — delete it by hand")
                 if "smoke-secret" in json.dumps(page):
-                    return fail("credential reached Notion properties"), telegram
+                    return fail("credential reached the Job Order"), telegram
         finally:
             await adapters.close()
             ledger.close()
     return result, telegram
 
 
+async def step_api_access(s: Smoke) -> Result:
+    """The API key reads People, Projects and Departments and answers ``jo find``."""
+    if missing_secrets():
+        return skip(f"needs T6_API_URL and T6_API_SECRET; missing {missing_secrets()}")
+    from t6.client import Client
+
+    from jo_watchdog.adapters.t6api import T6Api
+
+    api = T6Api(Client(t6_api_url(), t6_api_secret()))
+    counts = {}
+    for label, read in (
+        ("People", api.people),
+        ("Projects", api.projects),
+        ("Departments", api.departments),
+    ):
+        try:
+            counts[label] = len(await read())
+        except Exception as exc:
+            return fail(f"the API key cannot read {label}: {type(exc).__name__}: {exc}")
+    try:
+        await api.find_job_orders(s.config.intake_chat_id, s.fixture_message_id)
+    except Exception as exc:
+        return fail(f"jo find failed: {type(exc).__name__}: {exc}")
+    return ok(", ".join(f"{n} {label}" for label, n in counts.items()))
+
+
 async def step_pipeline(s: Smoke) -> Result:
-    """Synthetic in-scope message: ledger, plan, Notion write, read-back, outbox, reaction."""
+    """Synthetic in-scope message: ledger, plan, Job Order raise, read-back, outbox, reaction."""
     print(f"    fixture message {s.config.intake_chat_id}:{s.fixture_message_id}")
     result, _ = await synthetic_capture(
         s, f"{SMOKE_MARK}\nPurpose: smoke check\npw: smoke-secret", dry_run=False
@@ -626,7 +417,7 @@ async def step_pipeline(s: Smoke) -> Result:
 
 
 async def step_dry_run(s: Smoke) -> Result:
-    """Dry-run stops at `planned`: one masked ops post, no Notion call, no reaction."""
+    """Dry-run stops at `planned`: one ops post, no Job Order raise, no reaction."""
     result, telegram = await synthetic_capture(s, f"{SMOKE_MARK}\npw: smoke-secret", dry_run=True)
     if result.status != PASS:
         return result
@@ -640,46 +431,26 @@ async def step_dry_run(s: Smoke) -> Result:
             s.config.ops_chat_id, posts[0], message_thread_id=s.config.ops_topic_id,
             parse_mode="HTML",
         )
-        return ok("held at planned; masked plan posted to the ops topic")
-    return ok("held at planned; one masked plan rendered, no Notion write, no reaction")
+        return ok("held at planned; plan posted to the ops topic")
+    return ok("held at planned; one plan rendered, no Job Order raised, no reaction")
 
 
 async def step_query_visibility(s: Smoke) -> Result:
-    if not s.notion or not s.smoke_page_key:
-        return skip("needs the pipeline step's page")
+    if not s.smoke_page_key:
+        return skip("needs the pipeline step's Job Order")
+    if missing_secrets():
+        return skip(f"needs T6_API_URL and T6_API_SECRET; missing {missing_secrets()}")
+    from t6.client import Client
+
+    from jo_watchdog.adapters.t6api import T6Api
+
+    api = T6Api(Client(t6_api_url(), t6_api_secret()))
+    chat_id, message_id = (int(part) for part in s.smoke_page_key.split(":"))
     for attempt in range(6):
-        page = await s.notion.query_data_source(
-            s.config.job_orders_data_source_id,
-            QueryRequest(
-                page_size=1,
-                filter={"property": "Telegram Key", "rich_text": {"equals": s.smoke_page_key}},
-            ),
-        )
-        if page.results:
-            return ok(f"new page visible to query after ~{attempt * 5}s")
+        if await api.find_job_orders(chat_id, message_id):
+            return ok(f"the new Job Order shows in jo find after ~{attempt * 5}s")
         await asyncio.sleep(5)
-    return fail("new page not visible to a Telegram Key query after 25s")
-
-
-async def step_unknown_select(s: Smoke) -> Result:
-    if not s.args.probe_unknown_select:
-        return skip("pass --probe-unknown-select (may add a Department option)")
-    payload = {
-        "parent": {"data_source_id": s.config.job_orders_data_source_id},
-        "properties": {
-            "Name": {"title": [{"text": {"content": f"{SMOKE_MARK} (unknown select)"}}]},
-            "Status": {"status": {"name": STATUS_OPTION}},
-            "Department": {"select": {"name": "ZZ-SMOKE-UNKNOWN"}},
-        },
-    }
-    try:
-        ref = await s.notion.create_page(payload)
-    except NotionError as exc:
-        return ok(f"unknown option rejected ({exc.status} {exc.code}); planner must blank it")
-    return manual(
-        f"Notion accepted and created the option ({ref.url}); delete the row and the "
-        "ZZ-SMOKE-UNKNOWN option, and keep the planner validating against live options"
-    )
+    return fail("the new Job Order is not found by jo find after 25s")
 
 
 def _print_check(check: ModelCheck) -> Result:
@@ -688,32 +459,34 @@ def _print_check(check: ModelCheck) -> Result:
     return check.result
 
 
-async def step_deepseek(s: Smoke) -> Result:
-    key = os.environ.get("DEEPSEEK_API_KEY")
-    if not key:
-        return skip("DEEPSEEK_API_KEY not set")
+async def step_extraction(s: Smoke) -> Result:
+    """Two live ``llm run`` calls through the production classifier."""
+    if not os.environ.get("T6_API_URL") or not os.environ.get("T6_API_SECRET"):
+        return skip("T6_API_URL or T6_API_SECRET not set")
+    from t6.client import Client
+
+    client = Client(t6_api_url(), t6_api_secret(), timeout=s.config.llm_timeout_seconds)
     return _print_check(
-        await check_deepseek(
-            key,
-            base_url=s.config.deepseek_base_url,
-            model=s.config.deepseek_model,
-            timeout=s.config.deepseek_timeout_seconds,
+        await check_extraction(
+            client,
+            model_hint=s.config.llm_model_hint,
+            timeout=s.config.llm_timeout_seconds,
         )
     )
 
 
 async def step_jev(s: Smoke) -> Result:
-    """One Decisions request holding all three regression pairs; needs no Notion access."""
-    key = os.environ.get("OPENROUTER_API_KEY")
-    if not key:
-        return skip("OPENROUTER_API_KEY not set")
+    """Three live ``llm decide`` calls, one for each regression pair; needs no Notion access."""
+    if not os.environ.get("T6_API_URL") or not os.environ.get("T6_API_SECRET"):
+        return skip("T6_API_URL or T6_API_SECRET not set")
+    from t6.client import Client
+
+    client = Client(t6_api_url(), t6_api_secret(), timeout=s.config.llm_timeout_seconds)
     return _print_check(
-        await check_jev(
-            key,
+        await check_decide(
+            client,
             ROOT / "tests/fixtures/jev/regression_pairs.json",
-            url=s.config.jev_url,
-            model=s.config.jev_model,
-            timeout=s.config.jev_timeout_seconds,
+            timeout=s.config.llm_timeout_seconds,
             t_link=s.config.t_link,
             t_hint=s.config.t_hint,
         )
@@ -721,39 +494,24 @@ async def step_jev(s: Smoke) -> Result:
 
 
 async def step_threshold_tuning(s: Smoke) -> Result:
-    """Score the corpus offline, retain the results, and leave the review to the owner."""
+    """Score the recorded Jev answers offline, retain the results; the owner reviews them."""
     fixtures = ROOT / "tests/fixtures"
-    corpus = json.loads((fixtures / "redacted_corpus.json").read_text(encoding="utf-8"))
-    pages = []
-    for name in ("contacts_query_page1.json", "contacts_query_page2.json"):
-        pages += json.loads((fixtures / "notion" / name).read_text(encoding="utf-8"))["results"]
-    settings = resolve_settings(s.config)
-    cases = fuzzy_cases(assignee_mentions(corpus), [person_from_page(p) for p in pages], settings)
     pairs = json.loads((fixtures / "jev/regression_pairs.json").read_text(encoding="utf-8"))
     out = ROOT / "docs/tuning/threshold-results.json"
     report = build_report(
-        corpus_size=len(corpus),
-        cases=cases,
         samples=match_samples(pairs),
-        current={
-            "fuzzy_min_score": s.config.fuzzy_min_score,
-            "fuzzy_min_lead": s.config.fuzzy_min_lead,
-            "t_link": s.config.t_link,
-            "t_hint": s.config.t_hint,
-        },
+        current={"t_link": s.config.t_link, "t_hint": s.config.t_hint},
         sample_source="recorded regression pairs (synthesized until a live capture is retained)",
         previous=read_report(out),
     )
     write_report(out, report)
     results = report["results"]
-    print(f"    {len(corpus)} corpus messages; {len(cases)} mentions reach fuzzy matching")
-    print(f"    {results['match_samples']} recorded Jev answers; "
-          f"{len(results['refused_loosening'])} looser fuzzy point(s) refused")
+    print(f"    {results['match_samples']} recorded Jev answers")
     print(f"    results retained at {out.relative_to(ROOT)} (digest {report['results_digest']})")
     review = report["owner_review"]
     if review["status"] != "reviewed":
         return manual(
-            "owner must review the fuzzy/link/hint thresholds in the retained results and "
+            "owner must review the link/hint thresholds in the retained results and "
             "attest (actor, time, scope, evidence); linking stays disabled"
         )
     return ok(f"owner review by {review['reviewed_by']} covers digest {report['results_digest']}")
@@ -865,16 +623,10 @@ STEPS: list[tuple[str, Callable[[Smoke], Awaitable[Result]]]] = [
     ("reaction_apply", step_reaction_apply),
     ("bot_rights", step_bot_rights),
     ("owner_handle", step_owner_handle),
-    ("notion_access", step_notion_access),
-    ("notion_schema", step_notion_schema),
-    ("deliverable_relation", step_deliverable_relation),
-    ("relation_contains", step_relation_contains),
-    ("reciprocal_relation", step_reciprocal_relation),
-    ("masker", step_masker),
+    ("api_access", step_api_access),
     ("pipeline", step_pipeline),
     ("query_visibility", step_query_visibility),
-    ("unknown_select", step_unknown_select),
-    ("deepseek", step_deepseek),
+    ("extraction", step_extraction),
     ("jev", step_jev),
     ("dry_run", step_dry_run),
     ("dry_run_scenario", step_dry_run_scenario),
@@ -884,7 +636,6 @@ STEPS: list[tuple[str, Callable[[Smoke], Awaitable[Result]]]] = [
     ("outbox_retry", step_outbox_retry),
     ("forward_origins", step_forward_origins),
     ("channel_link", step_channel_link),
-    ("notion_retry_after", step_notion_retry_after),
     ("heartbeat_format", step_heartbeat_format),
     ("matcher_failure", step_matcher_failure),
     ("shadow_mode", step_shadow_mode),
@@ -917,7 +668,7 @@ async def run(args: argparse.Namespace) -> int:
             try:
                 result = await step(s)
             except Exception as exc:  # one broken step must not hide the rest
-                result = fail(f"{type(exc).__name__}: {outbound_text(str(exc)).text}")
+                result = fail(f"{type(exc).__name__}: {exc}")
             result = attest(result, attestations.get(name))
             results[name] = result
             print(f"{result.status:<8} {name}: {result.detail}")
@@ -968,27 +719,6 @@ def main() -> None:
     parser.add_argument(
         "--attestations",
         help="JSON list of {step, actor, at, scope, evidence} settling SKIP/MANUAL steps by hand",
-    )
-    parser.add_argument(
-        "--probe-relation-write",
-        action="store_true",
-        help="create one marked Job Order linked to a Deliverable and read the relation back",
-    )
-    parser.add_argument(
-        "--probe-retry-after",
-        action="store_true",
-        help="send a bounded burst of Notion reads to observe a 429 and its Retry-After",
-    )
-    parser.add_argument(
-        "--retry-after-requests",
-        type=int,
-        default=40,
-        help="request bound for --probe-retry-after (capped at 100)",
-    )
-    parser.add_argument(
-        "--probe-unknown-select",
-        action="store_true",
-        help="write an unknown Department option to see how Notion reacts",
     )
     sys.exit(asyncio.run(run(parser.parse_args())))
 

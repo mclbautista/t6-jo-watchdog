@@ -59,7 +59,7 @@ class SchemaTests(unittest.TestCase):
                 "INSERT INTO offsets (id, last_committed_offset) VALUES (2, 5)"
             )
 
-    def test_v1_database_migrates_and_backfills_mask_metadata(self):
+    def test_v1_database_migrates_and_keeps_its_rows_as_written(self):
         self.ledger.close()
         legacy_path = Path(self.tmp.name) / "legacy.db"
         connection = sqlite3.connect(legacy_path)
@@ -91,10 +91,10 @@ class SchemaTests(unittest.TestCase):
         self.ledger = Ledger(legacy_path)
         message = self.ledger.get_message("-100:1")
         assert message is not None
-        self.assertEqual(message["masked_count"], 1)
-        self.assertEqual(message["masker_version"], "1.0.0")
-        self.assertNotIn("legacy-secret", message["masked_text"])
-        self.assertNotIn("legacy-secret", message["plan_json"])
+        # The watchdog masks nothing: no masking metadata is made up for an old row.
+        self.assertIsNone(message["masked_count"])
+        self.assertEqual(message["text"], "PW: legacy-secret")
+        self.assertIn("legacy-secret", message["plan_json"])
 
 
 class AcceptMessageTests(unittest.TestCase):
@@ -312,3 +312,21 @@ class Migration3Tests(unittest.TestCase):
         names = {r[0] for r in ledger._conn.execute("SELECT name FROM sqlite_master")}
         self.assertIn("messages_state", names)
         self.assertNotIn("messages_new", names)
+
+
+class RollbackSafetyTests(unittest.TestCase):
+    def test_new_rows_hold_the_mask_columns_the_previous_image_leaves_alone(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Ledger(Path(tmp) / "ledger.db")
+            self.addCleanup(ledger.close)
+            ledger.ingest_message(-1, 5, "{}", "Task: x", "Task: x", posted_at=None)
+            ledger.accept_message(-1, 6, 1, "{}", "Task: y", "Task: y", posted_at=None)
+            rows = ledger._conn.execute(
+                "SELECT masked_text, masker_version, masked_count FROM messages"
+            ).fetchall()
+            self.assertTrue(rows)
+            for row in rows:  # the previous image backfills rows where any of them is NULL
+                self.assertEqual(tuple(row), ("", "t6-api", 0))

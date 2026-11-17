@@ -101,9 +101,9 @@ def _state(conn, *, detach=(), include_audit=True):
 
 def _inspect(conn):
     versions = [r[0] for r in conn.execute('SELECT version FROM schema_version ORDER BY version')]
-    if versions not in [list(range(1, n + 1)) for n in (9, 10, 11)]:
+    if versions not in [list(range(1, n + 1)) for n in (9, 10, 11, 12, 13, 14)]:
         raise ReconciliationError(
-            'unsupported schema; expected contiguous migrations 1–9, 10 or 11')
+            'unsupported schema; expected contiguous migrations 1–9, 10, 11, 12, 13 or 14')
     if conn.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
         raise ReconciliationError('ledger integrity check failed')
     audit_schema = [r[0] for r in conn.execute(

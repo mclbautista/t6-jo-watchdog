@@ -18,10 +18,9 @@ from jo_watchdog.core.findings import Finding
 from jo_watchdog.core.job_order import plan_job_order
 from jo_watchdog.ledger.db import OUTBOX_RETRY_SECONDS, Ledger, OutboxMessage
 from jo_watchdog.ledger.states import State
-from tests.fakes import FakeClassifier, FakeNotion, FakeTelegram, ok_result, update
+from tests.fakes import FakeClassifier, FakeJobOrders, FakeTelegram, ok_result, update
 
 KEY = "-100123:42"
-WITHHELD = "[password withheld – see Telegram message]"
 
 
 async def no_sleep(_seconds: float) -> None:
@@ -36,7 +35,6 @@ def make_config(**overrides) -> Config:
         ops_topic_id=7,
         standing_cc_telegram_handle="priya",
         captured_reaction="✅",
-        job_orders_data_source_id="ds-1",
     )
     base.update(overrides)
     return Config(**base)
@@ -61,7 +59,7 @@ class Harness:
         test.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "ledger.db"
         self.telegram = telegram or FakeTelegram(list(updates))
-        self.notion = notion or FakeNotion()
+        self.notion = notion or FakeJobOrders()
         # A clean `jo` extraction, so only what a test sets up is flagged.
         self.classifier = classifier or FakeClassifier(
             ok_result(title="Teaser", task="Edit the teaser")
@@ -75,7 +73,6 @@ class Harness:
         self.worker = Worker(
             ledger=self.ledger,
             telegram=self.telegram,
-            notion=self.notion,
             job_orders=self.notion,
             classifier=self.classifier,
             config=self.config,
@@ -154,7 +151,7 @@ class CaptureReportTests(unittest.IsolatedAsyncioTestCase):
             "\n"
             "Forwarded from a channel: Studio\n"
             "\n"
-            '<a href="https://notion.example/page-1">Notion row</a>\n'
+            '<a href="https://www.notion.so/page1">Notion row</a>\n'
             '<a href="https://t.me/c/123/5/42">Telegram message</a>\n'
             '<a href="https://t.me/studio/88">Original message</a>',
         )
@@ -173,7 +170,7 @@ class CaptureReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(h.ledger.get_message(KEY)["findings_json"]), [])
 
     async def test_readback_mismatch_is_reported_untagged(self):
-        h = Harness(self, [update(1, message_id=42)], notion=FakeNotion(wrong_name=True))
+        h = Harness(self, [update(1, message_id=42)], notion=FakeJobOrders(wrong_name=True))
         await h.worker.run_once()
         [(_, _, text)] = h.telegram.sent
         self.assertIn("Notion row differs from the plan: Name", text)
@@ -188,13 +185,13 @@ class CaptureReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Forwarded from a hidden user: Che", text)
         self.assertNotIn("Original message", text)
 
-    async def test_report_text_is_masked(self):
-        u = channel_forward(text="PW: swordfish\nTask: edit")
+    async def test_report_holds_the_name_and_never_the_body(self):
+        u = channel_forward(text="MFG - TOC - JO #74\nPW: swordfish\nTask: edit")
         h = Harness(self, [u])
         await h.worker.run_once()
         [row] = h.outbox()
+        self.assertIn("<code>MFG - TOC - JO #74</code>", row["text"])
         self.assertNotIn("swordfish", row["text"])
-        self.assertIn(f"<code>PW: {WITHHELD}</code>", row["text"])
         self.assertNotIn("swordfish", h.telegram.sent[0][2])
 
     async def test_plan_findings_tag_standing_cc(self):
@@ -368,7 +365,7 @@ class AtLeastOnceTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_failing_capture_does_not_starve_delivery(self):
-        h = Harness(self, [update(1, message_id=42)], notion=FakeNotion(fail_create=True))
+        h = Harness(self, [update(1, message_id=42)], notion=FakeJobOrders(fail_create=True))
         h.ledger.enqueue_system(OutboxMessage("stale_cache", -100999, 7, "stale"))
         await h.worker.run_once()
         self.assertEqual(h.telegram.sent, [(-100999, 7, "stale")])

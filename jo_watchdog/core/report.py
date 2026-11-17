@@ -4,18 +4,21 @@ Messages are rendered as Telegram HTML (``parse_mode="HTML"``): the wording is
 exactly the #23 templates, with ``[text](URL)`` written as ``<a href>`` and
 backticks as ``<code>``, so only ``& < >`` ever need escaping.
 
-Every source-derived field passes through the shared masker before it is
-escaped; template text and URLs built here are not masked. The full raw
-message is never part of a report.
+Text from the message is withheld by the caller (``text withhold``) before it reaches a
+renderer here; the renderers only flatten and escape it.
+
+Source-derived fields are flattened to one line and escaped; free text of the
+Job Order (its notes, task and the like) is reported as a character count, never
+as text. The full raw message is never part of a report.
 """
 
 from __future__ import annotations
 
 import html
+from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any
 
-from jo_watchdog.core.masker import outbound_text
 from jo_watchdog.core.verify import MANILA, Finding, ForwardOrigin, tags_standing_cc
 
 FLAGGED_HEADER = "⚠️ Flagged on capture"
@@ -26,13 +29,11 @@ _ORIGIN_WORDS = {"hidden_user": "hidden user", "chat": "group", "channel": "chan
 
 
 def _field(value: Any) -> str:
-    """Mask, flatten to one line, then HTML-escape, one source-derived value.
+    """Flatten to one line, then HTML-escape, one source-derived value.
 
-    Masking runs first so a multiline credential assignment is still seen
-    whole; only the rendered copy is flattened, never a stored field.
+    Only the rendered copy is flattened, never a stored field.
     """
-    masked = outbound_text(str(value)).text
-    return html.escape(" ".join(masked.split()), quote=False)
+    return html.escape(" ".join(str(value).split()), quote=False)
 
 
 def _link(text: str, url: str) -> str:
@@ -67,6 +68,11 @@ def finding_line(f: Finding) -> str:
             return f'{_role(p["role"])} "{_field(p["raw"])}" didn\'t match a contact'
         case "ambiguous_person":
             return f'{_role(p["role"])} "{_field(p["raw"])}" matches more than one contact'
+        case "assignee_no_person_id":
+            return (
+                f'Assignee "{_field(p["raw"])}" ({_field(p.get("contact", ""))}) has no T6 Person ID:'
+                " left out of the Job Order's assignees, and an End of Shift deadline ignores them"
+            )
         case "unresolved_project":
             return f'Project mention "{_field(p["raw"])}" didn\'t match any known Project Code'
         case "unknown_department":
@@ -246,22 +252,57 @@ def _plain_property(prop: dict) -> str:
     return str(prop)
 
 
-def render_dry_run_plan(*, plan: dict, intake_url: str) -> str:
-    """The masked stored plan, one line per planned property (#27)."""
-    lines = [DRY_RUN_HEADER, f"<code>{_field(plan.get('name', ''))}</code>", ""]
+def dry_run_values(plan: dict) -> list[tuple[str, Any]]:
+    """What the dry-run plan shows: a label and a value for each planned property (#27).
+
+    The Job Order's free text is reported as a character count; its other values (the API's
+    number, Department, deadline, the relations, and every other non-empty key of the plan)
+    are shown. A value may hold text from the message, so it goes through ``text withhold``
+    before ``render_dry_run_plan``.
+    """
+    shown: list[tuple[str, Any]] = []
     for key, value in plan.items():
         if key in ("name", "telegram_key", "body_blocks") or value in (None, "", [], {}):
             continue
         if key == "properties":
             for prop, raw in value.items():
                 text = _plain_property(raw)
+                if "rich_text" in raw and prop != "JO Number":
+                    text = f"{len(text)} characters" if text else ""
                 if prop not in ("Name", "Telegram Key") and text:
-                    lines.append(f"{_field(prop)}: {_field(text)}")
+                    shown.append((prop, text))
             continue
-        lines.append(f"{_field(key)}: {_field(value)}")
-    lines.append(f"Body: {len(plan.get('body_blocks') or [])} block(s)")
+        shown.append((key, value))
+    return shown
+
+
+def render_dry_run_plan(
+    *, name: str, values: list[tuple[str, Any]], body_blocks: int, intake_url: str
+) -> str:
+    """The dry-run plan, one line per value of ``dry_run_values`` (already withheld)."""
+    lines = [DRY_RUN_HEADER, f"<code>{_field(name)}</code>", ""]
+    lines += [f"{_field(label)}: {_field(value)}" for label, value in values]
+    lines.append(f"Body: {body_blocks} block(s)")
     lines += ["", _link("Telegram message", intake_url)]
     return "\n".join(lines)
+
+
+def map_strings(value: Any, fn: Callable[[str], str], skip: frozenset[str] = frozenset()) -> Any:
+    """``value`` with ``fn`` applied to every string in it, in a fixed order.
+
+    Dicts and lists are copied; a dict value under a key in ``skip`` is left as it is.
+    """
+    if isinstance(value, str):
+        return fn(value)
+    if isinstance(value, dict):
+        return {k: v if k in skip else map_strings(v, fn, skip) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [map_strings(v, fn, skip) for v in value]
+    return value
+
+
+# Finding params that are not text from the message: links, the origin kind, a role, a date.
+NOT_MESSAGE_TEXT = frozenset({"url", "urls", "origin", "role", "posted", "properties"})
 
 
 def render_outage_alert(
@@ -344,7 +385,6 @@ def render_heartbeat(
         f"Flagged: {stats['flagged']}",
         f"Ignored (not a JO): {stats['ignored']}",
         f"No-text forwards: {stats['no_text']}",
-        f"Passwords withheld: {stats['passwords_withheld']}",
         f"Reaction failed: {stats['reaction_failed']}",
         "",
         f"Deliverables linked: {d['linked']}",
@@ -357,9 +397,9 @@ def render_heartbeat(
     ]
     for old, new in stats["models"].values():
         lines.append(f"Model changed: {_field(old)} → {_field(new)}")
-    if stats["ignored_first_lines"]:
-        lines += ["", "Ignored, first lines:"]
-        lines += [f'"{_field(line)}"' for line in stats["ignored_first_lines"]]
+    if stats["ignored_message_ids"]:
+        lines += ["", "Ignored, message ids:"]
+        lines += [f"{_field(message_id)}" for message_id in stats["ignored_message_ids"]]
     return "\n".join(lines)
 
 

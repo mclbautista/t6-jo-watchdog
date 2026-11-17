@@ -19,7 +19,15 @@ from jo_watchdog.core.duplicates import text_sha256
 from jo_watchdog.ledger.db import Ledger
 from jo_watchdog.ledger.migrations import MIGRATIONS
 from jo_watchdog.ledger.states import State
-from tests.fakes import POSTED_AT_UNIX, FakeClassifier, FakeNotion, FakeTelegram, ok_result
+from tests.fakes import (
+    POSTED_AT_UNIX,
+    FakeClassifier,
+    FakeJobOrders,
+    FakeMatcher,
+    FakeTelegram,
+    ok_result,
+    project,
+)
 
 CHAT, TOPIC = -100123, 5
 FIXTURES = json.loads(
@@ -35,7 +43,6 @@ def make_config(**overrides) -> Config:
         ops_topic_id=7,
         standing_cc_telegram_handle="priya",
         captured_reaction="✅",
-        job_orders_data_source_id="ds-1",
     )
     base.update(overrides)
     return Config(**base)
@@ -105,11 +112,16 @@ class Harness:
         self.ledger = Ledger(Path(self.tmp.name) / "ledger.db")
         test.addCleanup(self.ledger.close)
         self.telegram = FakeTelegram()
-        self.notion = FakeNotion()
+        self.notion = FakeJobOrders(departments=("TOC", "VID", "OE"))
         self.config = make_config()
         self.caches = None
+        self.matcher = FakeMatcher(
+            projects={"MFG": project("proj-mfg", "MFG"), "SOMSOM": project("proj-som", "SOMSOM")}
+        )
         if caches:
-            self.caches = CacheManager(ledger=self.ledger, directory=None, config=self.config)
+            self.caches = CacheManager(
+                ledger=self.ledger, directory=None, matcher=self.matcher, config=self.config
+            )
             self.caches._apply(
                 "people",
                 [{"page_id": "c-ben", "name": "Benjamin Cruz", "telegram_user_id": "222"}],
@@ -118,16 +130,14 @@ class Harness:
             self.caches._apply(
                 "projects",
                 [
-                    {"page_id": "proj-mfg", "name": "Manufacturing", "code": "MFG"},
-                    {"page_id": "proj-som", "name": "Somsom", "code": "SOMSOM"},
+                    {"page_id": "proj-mfg", "name": "Manufacturing"},
+                    {"page_id": "proj-som", "name": "Somsom"},
                 ],
                 "2026-09-28T00:00:00Z",
             )
-            self.caches._apply("departments", ["TOC", "VID", "OE"], "2026-09-28T00:00:00Z")
         self.worker = Worker(
             ledger=self.ledger,
             telegram=self.telegram,
-            notion=self.notion,
             job_orders=self.notion,
             classifier=classifier or FakeClassifier(ok_result(title="Teaser", task="Edit")),
             config=self.config,
@@ -311,9 +321,9 @@ class RepostAndReuseTests(unittest.IsolatedAsyncioTestCase):
                 await h.feed(message_update(1, 10, "MFG - TOC - JO #74\nTask: cut teaser"))
                 await h.feed(message_update(2, 11, f"MFG - TOC - {second}\nTask: color pass"))
                 self.assertEqual(h.row(11)["jo_key"], "proj-mfg|74")
-                self.assertIn("#074 already used on", h.posts()[0])
+                self.assertIn("#74 already used on", h.posts()[0])
                 self.assertEqual(
-                    json.loads(h.row(11)["plan_json"])["duplicate"]["jo_number"], "#074"
+                    json.loads(h.row(11)["plan_json"])["duplicate"]["jo_number"], "#74"
                 )
 
     async def test_exact_repost_wins_over_number_reuse(self):
@@ -415,7 +425,7 @@ class EditTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("changed", h.body(0))
         edit_posts = [p for p in h.posts() if p.startswith("✏️")]
         self.assertEqual(len(edit_posts), 1)
-        self.assertIn("https://notion.example/page-1", edit_posts[0])
+        self.assertIn("https://www.notion.so/page1", edit_posts[0])
         self.assertEqual([e["outcome"] for e in h.edits(10)], ["reported"] * 2)
 
     async def test_edit_to_ignored_message_is_recorded_only(self):

@@ -1,0 +1,302 @@
+{
+ "_note": "Answers in the shape of the t6 API's llm run (a Done outcome, or a Refused one), recorded for offline contract tests. No network access in CI.",
+ "jo": {
+  "outcome": "done",
+  "result": {
+   "output": {
+    "verdict": "jo",
+    "confidence": "high",
+    "reasons": "Has a JO header, a task and an assignee.",
+    "multiple_jo_suspected": false,
+    "header_raw": "MFG - TOC - JO #74",
+    "jo_number_raw": "JO #74",
+    "project_raw": "MFG",
+    "department_raw": "TOC",
+    "header_date_raw": "September 28 / Monday",
+    "title": "Show Alpha FTR",
+    "task": "D14-15 Upload synced dailies",
+    "purpose": null,
+    "source": null,
+    "watermark": null,
+    "link_settings": null,
+    "mode_of_transfer": null,
+    "platform": null,
+    "blocker": null,
+    "pending": null,
+    "notes": null,
+    "deadline_raw": "September 29 / Tues 5AM",
+    "assignees_raw": "Lena",
+    "cc_raw": "@priya",
+    "subtitle": null
+   },
+   "model": "deepseek-chat",
+   "provider": "deepseek",
+   "prompt_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "schema_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+   "tokens": {
+    "prompt": 6180,
+    "completion": 214,
+    "total": 6394
+   },
+   "zdr": false,
+   "output_valid": true,
+   "failure": null,
+   "repaired": false,
+   "unresolved": [],
+   "masked_output": null
+  }
+ },
+ "unsure": {
+  "outcome": "done",
+  "result": {
+   "output": {
+    "header_raw": "pa export naman ng trailer bukas",
+    "jo_number_raw": null,
+    "project_raw": null,
+    "department_raw": null,
+    "header_date_raw": null,
+    "title": null,
+    "task": null,
+    "purpose": null,
+    "source": null,
+    "watermark": null,
+    "link_settings": null,
+    "mode_of_transfer": null,
+    "platform": null,
+    "blocker": null,
+    "pending": null,
+    "notes": null,
+    "deadline_raw": null,
+    "assignees_raw": null,
+    "cc_raw": null,
+    "subtitle": null,
+    "verdict": "unsure",
+    "confidence": "low",
+    "reasons": "Reads like a request but has no JO header or assignee.",
+    "multiple_jo_suspected": false
+   },
+   "model": "deepseek-chat",
+   "provider": "deepseek",
+   "prompt_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "schema_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+   "tokens": {
+    "prompt": 6180,
+    "completion": 214,
+    "total": 6394
+   },
+   "zdr": false,
+   "output_valid": true,
+   "failure": null,
+   "repaired": false,
+   "unresolved": [],
+   "masked_output": null
+  }
+ },
+ "not_jo": {
+  "outcome": "done",
+  "result": {
+   "output": {
+    "header_raw": "Salamat po!",
+    "jo_number_raw": null,
+    "project_raw": null,
+    "department_raw": null,
+    "header_date_raw": null,
+    "title": null,
+    "task": null,
+    "purpose": null,
+    "source": null,
+    "watermark": null,
+    "link_settings": null,
+    "mode_of_transfer": null,
+    "platform": null,
+    "blocker": null,
+    "pending": null,
+    "notes": null,
+    "deadline_raw": null,
+    "assignees_raw": null,
+    "cc_raw": null,
+    "subtitle": null,
+    "verdict": "not_jo",
+    "confidence": "high",
+    "reasons": "A thank-you message with no request.",
+    "multiple_jo_suspected": false
+   },
+   "model": "deepseek-chat",
+   "provider": "deepseek",
+   "prompt_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "schema_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+   "tokens": {
+    "prompt": 6180,
+    "completion": 214,
+    "total": 6394
+   },
+   "zdr": false,
+   "output_valid": true,
+   "failure": null,
+   "repaired": false,
+   "unresolved": [],
+   "masked_output": null
+  }
+ },
+ "empty_content": {
+  "outcome": "done",
+  "result": {
+   "output": null,
+   "model": "deepseek-chat",
+   "provider": "deepseek",
+   "prompt_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "schema_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+   "tokens": {
+    "prompt": 6180,
+    "completion": 214,
+    "total": 6394
+   },
+   "zdr": false,
+   "output_valid": false,
+   "failure": "empty",
+   "repaired": false,
+   "unresolved": [],
+   "masked_output": null
+  }
+ },
+ "malformed_json": {
+  "outcome": "done",
+  "result": {
+   "output": null,
+   "model": "deepseek-chat",
+   "provider": "deepseek",
+   "prompt_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "schema_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+   "tokens": {
+    "prompt": 6180,
+    "completion": 214,
+    "total": 6394
+   },
+   "zdr": false,
+   "output_valid": false,
+   "failure": "invalid_json",
+   "repaired": false,
+   "unresolved": [],
+   "masked_output": null
+  }
+ },
+ "schema_mismatch": {
+  "outcome": "done",
+  "result": {
+   "output": null,
+   "model": "deepseek-chat",
+   "provider": "deepseek",
+   "prompt_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "schema_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+   "tokens": {
+    "prompt": 6180,
+    "completion": 214,
+    "total": 6394
+   },
+   "zdr": false,
+   "output_valid": false,
+   "failure": "schema_violation",
+   "repaired": false,
+   "unresolved": [],
+   "masked_output": null
+  }
+ },
+ "unresolved_placeholder": {
+  "outcome": "done",
+  "result": {
+   "output": null,
+   "model": "deepseek-chat",
+   "provider": "deepseek",
+   "prompt_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "schema_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+   "tokens": {
+    "prompt": 6180,
+    "completion": 214,
+    "total": 6394
+   },
+   "zdr": false,
+   "output_valid": false,
+   "failure": "unresolved_placeholder",
+   "repaired": false,
+   "unresolved": [],
+   "masked_output": null
+  }
+ },
+ "wrong_shape": {
+  "outcome": "done",
+  "result": {
+   "output": {
+    "verdict": "maybe",
+    "confidence": "high",
+    "reasons": "Has a JO header, a task and an assignee.",
+    "multiple_jo_suspected": false,
+    "header_raw": "MFG - TOC - JO #74",
+    "jo_number_raw": "JO #74",
+    "project_raw": "MFG",
+    "department_raw": "TOC",
+    "header_date_raw": "September 28 / Monday",
+    "title": "Show Alpha FTR",
+    "task": "D14-15 Upload synced dailies",
+    "purpose": null,
+    "source": null,
+    "watermark": null,
+    "link_settings": null,
+    "mode_of_transfer": null,
+    "platform": null,
+    "blocker": null,
+    "pending": null,
+    "notes": null,
+    "deadline_raw": "September 29 / Tues 5AM",
+    "assignees_raw": "Lena",
+    "cc_raw": "@priya",
+    "subtitle": null
+   },
+   "model": "deepseek-chat",
+   "provider": "deepseek",
+   "prompt_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "schema_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+   "tokens": {
+    "prompt": 6180,
+    "completion": 214,
+    "total": 6394
+   },
+   "zdr": false,
+   "output_valid": true,
+   "failure": null,
+   "repaired": false,
+   "unresolved": [],
+   "masked_output": null
+  }
+ },
+ "provider_failure": {
+  "outcome": "refused",
+  "rule": "provider",
+  "reason": "LLM provider failed",
+  "failure": "api_error"
+ },
+ "rate_limited": {
+  "outcome": "refused",
+  "rule": "provider",
+  "reason": "LLM provider failed",
+  "failure": "api_error",
+  "retry_after": 90.0
+ },
+ "provider_timeout": {
+  "outcome": "refused",
+  "rule": "provider",
+  "reason": "LLM provider failed",
+  "failure": "timeout"
+ },
+ "leak": {
+  "outcome": "refused",
+  "rule": "masking",
+  "reason": "Output contains unmasked registered names",
+  "failure": "leak"
+ },
+ "policy": {
+  "outcome": "refused",
+  "rule": "policy",
+  "reason": "Provider does not meet retention policy",
+  "failure": "policy"
+ }
+}

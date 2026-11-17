@@ -11,6 +11,7 @@ them mandatory when the service boots.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import warnings
@@ -29,32 +30,13 @@ from pydantic import (
     model_validator,
 )
 
-from jo_watchdog.adapters.deepseek import DEFAULT_BASE_URL, DEFAULT_MODEL
-from jo_watchdog.adapters.jev import JEV_MODEL, JEV_URL
-from jo_watchdog.adapters.notion import NOTION_VERSION
-from jo_watchdog.core.resolve import ResolveSettings
-
 _HANDLE_RE = re.compile(r"^@?[A-Za-z0-9_]{5,32}$")
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-_NOTION_ID_RE = re.compile(
-    r"^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
-)
-_NOTION_VERSION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-# Notion ids a live service must hold real, well-formed values for.
-_NOTION_ID_KEYS = (
-    "job_orders_data_source_id",
-    "contacts_data_source_id",
-    "projects_data_source_id",
-    "deliverables_data_source_id",
-    "standing_cc_contact_page_id",
-)
-_URL_KEYS = ("deepseek_base_url", "jev_url")
-_NON_EMPTY_KEYS = ("deepseek_model", "jev_model", "ledger_path")
+_NON_EMPTY_KEYS = ("llm_model_hint", "ledger_path")
 
 # Keys the running service cannot do without; checked by ``require_live_keys``.
 LIVE_REQUIRED_KEYS = (
-    "standing_cc_contact_page_id",
     "standing_cc_telegram_handle",
     "owner_telegram_handle",
 )
@@ -65,13 +47,23 @@ SECRET_KEYS = (
     "TELEGRAM_BOT_TOKEN",
     "T6_API_URL",
     "T6_API_SECRET",
-    "NOTION_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "OPENROUTER_API_KEY",
 )
 
 # Gateway mode (#95): the module secret replaces the Telegram token.
 GATEWAY_SECRET_KEY = "WATCHDOG_SECRET"
+
+
+class FilterEntry(BaseModel):
+    """One chat (and optionally one topic) and the t6-core filter rule that applies to it.
+
+    The rule's question and thresholds live in t6-core; only its name is configured here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    chat_id: int
+    topic_id: int | None = None
+    rule: str = Field(min_length=1, max_length=200)
 
 
 class Config(BaseModel):
@@ -102,30 +94,31 @@ class Config(BaseModel):
     poll_timeout: int = Field(default=50, ge=1, le=50)  # Telegram long-poll seconds
     poll_interval: float = Field(default=1.0, gt=0)
 
-    # Notion
-    job_orders_data_source_id: str
-    notion_version: str = NOTION_VERSION
+    # Classify/extract through the t6 API (``llm run``): the model the API's provider list
+    # names (the "latest" alias, no pin), and how long to wait for the call. The API's own
+    # provider timeout is 60 s, so a shorter wait here would cut off a call that is still running.
+    llm_model_hint: str = "deepseek-chat"
+    llm_timeout_seconds: float = Field(default=70, ge=70)
 
-    # DeepSeek classify/extract
-    deepseek_base_url: str = DEFAULT_BASE_URL
-    deepseek_model: str = DEFAULT_MODEL  # the "latest" alias, no pin
-    deepseek_timeout_seconds: float = Field(default=60, gt=0)
+    # Filter before extraction (#153): ``llm filter`` per message, by chat and topic. ``None``
+    # filters the intake topic with the rule ``job_order``; ``[]`` filters nothing. Count first:
+    # while ``filter_drops`` is false the verdict is stored and every message is still extracted.
+    filters: list[FilterEntry] | None = None
+    filter_drops: bool = False
 
     # Live resolution caches (#22)
-    contacts_data_source_id: str = "77b2a701-71db-4e88-a694-37f07303e77e"
-    projects_data_source_id: str = "cc1dc02a-8f32-4c97-81e4-dc1e08d7f134"
-    standing_cc_contact_page_id: str | None = None
     cache_refresh_hours: float = Field(default=6, gt=0)
     cache_stale_alert_hours: float = Field(default=24, gt=0)
-    fuzzy_min_score: float = Field(default=90, ge=0, le=100)
-    fuzzy_min_lead: float = Field(default=8, ge=0, le=100)
-    honorifics: list[str] = Field(default_factory=lambda: ["ate", "kuya", "sir"])
 
     # Ledger
     ledger_path: str = "./data/ledger.db"
 
-    # Planning: header Department token -> Department option (validated live in #22)
-    department_aliases: dict[str, str] = Field(default_factory=lambda: {"TO": "TOC"})
+    # The Department rules run in the t6 API (#151). An old config.yaml that still has the
+    # alias map boots; the value is ignored (``T6_DEPARTMENT_ALIASES`` is the API's).
+    department_aliases: dict[str, str] | None = None
+
+    # How long to wait for the page of a raised Job Order before the retry schedule applies.
+    raise_poll_seconds: float = Field(default=60, ge=0)
 
     # Reliability and heartbeat (#25)
     owner_telegram_handle: str | None = None
@@ -134,11 +127,7 @@ class Config(BaseModel):
     heartbeat_time: str = "07:00"
     timezone: str = "Asia/Manila"
 
-    # Deliverable matching (Jev via OpenRouter, #26)
-    deliverables_data_source_id: str = "0a4ff084-3138-429c-8dbe-4d802aded74f"
-    jev_url: str = JEV_URL
-    jev_model: str = JEV_MODEL
-    jev_timeout_seconds: float = Field(default=30, gt=0)
+    # Deliverable matching (the t6 API's ``llm decide``, #26, #147)
     t_link: float = Field(default=0.90, ge=0, le=1)
     t_hint: float = Field(default=0.50, ge=0, le=1)
     deliverable_link_enabled: bool = False
@@ -186,17 +175,19 @@ class Config(BaseModel):
             raise ValueError("retry_schedule_seconds must be a non-empty list of positive ints")
         return value
 
-    @field_validator("honorifics")
-    @classmethod
-    def _honorifics(cls, value: list[str]) -> list[str]:
-        return [h.strip().casefold() for h in value if h.strip()]
-
-    @field_validator("department_aliases")
-    @classmethod
-    def _department_aliases(cls, value: dict[str, str]) -> dict[str, str]:
-        if any(not k.strip() or not v.strip() for k, v in value.items()):
-            raise ValueError("department_aliases keys and values must be non-empty")
-        return value
+    def filter_rule(self, chat_id: int, topic_id: int | None) -> str | None:
+        """The filter rule for a chat and topic, or ``None`` when it is not filtered."""
+        entries = self.filters
+        if entries is None:
+            entries = [
+                FilterEntry(
+                    chat_id=self.intake_chat_id, topic_id=self.intake_topic_id, rule="job_order"
+                )
+            ]
+        for entry in entries:
+            if entry.chat_id == chat_id and entry.topic_id in (None, topic_id):
+                return entry.rule
+        return None
 
     @model_validator(mode="after")
     def _cross_field(self) -> Config:
@@ -215,17 +206,6 @@ class Config(BaseModel):
         return self
 
 
-def resolve_settings(config: Config) -> ResolveSettings:
-    """The pure resolver's knobs, taken from the validated config."""
-    return ResolveSettings(
-        fuzzy_min_score=config.fuzzy_min_score,
-        fuzzy_min_lead=config.fuzzy_min_lead,
-        honorifics=tuple(config.honorifics),
-        department_aliases=config.department_aliases,
-        standing_cc_contact_page_id=config.standing_cc_contact_page_id,
-    )
-
-
 def _production_problems(config: Config) -> list[str]:
     """Why ``config`` is not fit to boot against live providers.
 
@@ -236,21 +216,9 @@ def _production_problems(config: Config) -> list[str]:
         for key in LIVE_REQUIRED_KEYS
         if getattr(config, key) in (None, "", 0)
     ]
-    for key in _NOTION_ID_KEYS:
-        value = getattr(config, key)
-        if value and not _NOTION_ID_RE.match(value.strip()):
-            problems.append(f"{key} is not a Notion id (32 hex characters, dashes optional)")
-        elif not value and key not in LIVE_REQUIRED_KEYS:
-            problems.append(f"{key} must not be empty")
-    for key in _URL_KEYS:
-        parts = urlsplit(getattr(config, key).strip())
-        if parts.scheme not in ("http", "https") or not parts.hostname:
-            problems.append(f"{key} must be an http(s) URL with a host")
     for key in _NON_EMPTY_KEYS:
         if not getattr(config, key).strip():
             problems.append(f"{key} must not be empty")
-    if not _NOTION_VERSION_RE.match(config.notion_version):
-        problems.append("notion_version must look like YYYY-MM-DD")
     for key in ("intake_topic_id", "ops_topic_id"):
         if getattr(config, key) <= 0:
             problems.append(f"{key} must be a positive topic id")
@@ -273,8 +241,8 @@ def require_live_keys(config: Config) -> None:
 def placeholder_keys(config: Config) -> list[str]:
     """Keys still holding the example file's FILL IN values (not production-ready)."""
     placeholders = []
-    for key in ("standing_cc_contact_page_id", "standing_cc_telegram_handle", "owner_telegram_handle"):
-        if str(getattr(config, key)).startswith(("00000000", "@standing_cc_handle", "@owner_handle")):
+    for key in ("standing_cc_telegram_handle", "owner_telegram_handle"):
+        if str(getattr(config, key)).startswith(("@standing_cc_handle", "@owner_handle")):
             placeholders.append(key)
     if config.intake_chat_id == -1000000000000:
         placeholders.append("intake_chat_id")
@@ -285,9 +253,33 @@ def placeholder_keys(config: Config) -> list[str]:
 
 # Keys renamed to role names (the standing cc person). Old files still load, with a warning.
 _RENAMED_KEYS = {
-    "leizette_contact_page_id": "standing_cc_contact_page_id",
     "leizette_telegram_handle": "standing_cc_telegram_handle",
 }
+
+
+# Keys of earlier releases that no longer do anything (the t6 API holds those rules and keys).
+# An old config.yaml still loads: each is dropped and named in one warning, never its value.
+REMOVED_KEYS = frozenset(
+    {
+        "job_orders_data_source_id",
+        "contacts_data_source_id",
+        "projects_data_source_id",
+        "deliverables_data_source_id",
+        "notion_version",
+        "deepseek_base_url",
+        "deepseek_model",
+        "deepseek_timeout_seconds",
+        "jev_url",
+        "jev_model",
+        "jev_timeout_seconds",
+        "fuzzy_min_score",
+        "fuzzy_min_lead",
+        "honorifics",
+        # The API adds the standing cc (``T6_STANDING_CC``); the old name of the key is ignored too.
+        "standing_cc_contact_page_id",
+        "leizette_contact_page_id",
+    }
+)
 
 
 def _apply_renamed_keys(data: dict) -> dict:
@@ -307,6 +299,13 @@ def load_config(path: str | Path) -> Config:
     """Load non-secret config from a YAML file."""
     with open(path, encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
+    removed = sorted(REMOVED_KEYS & data.keys())
+    if removed:
+        for key in removed:
+            del data[key]
+        logging.getLogger("jo_watchdog").warning(
+            "config keys ignored (removed): %s", ", ".join(removed)
+        )
     return Config(**_apply_renamed_keys(data))
 
 
@@ -346,14 +345,3 @@ def t6_api_url() -> str:
 def t6_api_secret() -> str:
     return _secret("T6_API_SECRET")
 
-
-def notion_token() -> str:
-    return _secret("NOTION_API_KEY")
-
-
-def deepseek_token() -> str:
-    return _secret("DEEPSEEK_API_KEY")
-
-
-def openrouter_token() -> str:
-    return _secret("OPENROUTER_API_KEY")

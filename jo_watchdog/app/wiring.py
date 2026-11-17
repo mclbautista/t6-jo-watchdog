@@ -1,6 +1,6 @@
 """Production adapter and worker construction, shared by ``run`` and ``smoke.py``.
 
-The smoke check must exercise the same wiring the service runs: caches, the Jev
+The smoke check must exercise the same wiring the service runs: caches, the
 matcher and the Deliverable source all present. Both entry points build their
 worker here, and a caller replaces individual adapters (for example a recording
 Telegram) rather than assembling a worker by hand.
@@ -13,10 +13,7 @@ from dataclasses import dataclass, field, replace
 from jo_watchdog.app.caches import CacheManager
 from jo_watchdog.app.config import (
     Config,
-    deepseek_token,
     gateway_secret,
-    notion_token,
-    openrouter_token,
     t6_api_secret,
     t6_api_url,
     telegram_token,
@@ -27,13 +24,13 @@ from jo_watchdog.ledger.db import Ledger
 
 @dataclass
 class Adapters:
-    """The five external adapters; ``closers`` release whatever the real ones opened."""
+    """The four external adapters; ``closers`` release whatever the real ones opened."""
 
     telegram: object
-    notion: object
     t6api: object
     classifier: object
     matcher: object | None
+    message_filter: object | None = None
     closers: list = field(default_factory=list)
 
     def with_(self, **replacements) -> Adapters:
@@ -46,37 +43,38 @@ class Adapters:
 
 
 def build_adapters(config: Config) -> Adapters:
-    """The real aiogram, httpx, t6 API, DeepSeek and Jev adapters, from the environment."""
+    """The real aiogram, httpx and t6 API (reads, matching, extraction) adapters."""
     from t6.client import Client
 
-    from jo_watchdog.adapters.deepseek import DeepSeekClassifier
-    from jo_watchdog.adapters.jev import JevMatcher
-    from jo_watchdog.adapters.notion import NotionAdapter
     from jo_watchdog.adapters.t6api import T6Api
+    from jo_watchdog.adapters.t6decide import T6DecideMatcher
+    from jo_watchdog.adapters.t6filter import T6Filter
+    from jo_watchdog.adapters.t6llm import T6LlmClassifier
 
-    notion = NotionAdapter(notion_token())
     t6api = T6Api(Client(t6_api_url(), t6_api_secret()))
-    classifier = DeepSeekClassifier(
-        deepseek_token(),
-        base_url=config.deepseek_base_url,
-        model=config.deepseek_model,
-        timeout_seconds=config.deepseek_timeout_seconds,
+    classifier = T6LlmClassifier(
+        Client(t6_api_url(), t6_api_secret(), timeout=config.llm_timeout_seconds),
+        model_hint=config.llm_model_hint,
+        timeout_seconds=config.llm_timeout_seconds,
     )
-    matcher = JevMatcher(
-        openrouter_token(),
-        url=config.jev_url,
-        model=config.jev_model,
-        timeout=config.jev_timeout_seconds,
+    matcher = T6DecideMatcher(
+        Client(t6_api_url(), t6_api_secret(), timeout=config.llm_timeout_seconds),
+        timeout_seconds=config.llm_timeout_seconds,
+    )
+
+    message_filter = T6Filter(
+        Client(t6_api_url(), t6_api_secret(), timeout=config.llm_timeout_seconds),
+        timeout_seconds=config.llm_timeout_seconds,
     )
 
     telegram, close_telegram = _build_telegram(config)
     return Adapters(
         telegram=telegram,
-        notion=notion,
         t6api=t6api,
         classifier=classifier,
         matcher=matcher,
-        closers=[notion.close, classifier.close, matcher.close, close_telegram],
+        message_filter=message_filter,
+        closers=[close_telegram],
     )
 
 
@@ -101,19 +99,21 @@ def _build_telegram(config: Config):
 
 
 def build_worker(config: Config, ledger: Ledger, adapters: Adapters, **worker_options) -> Worker:
-    """The production worker: caches loaded; Notion writes Job Orders and lists Deliverables."""
-    caches = CacheManager(ledger=ledger, directory=adapters.t6api, config=config)
+    """The production worker: caches loaded; the t6 API raises Job Orders and lists Deliverables."""
+    caches = CacheManager(
+        ledger=ledger, directory=adapters.t6api, matcher=adapters.t6api, config=config
+    )
     caches.load_persisted()  # last good snapshots first, then the live refresh
     return Worker(
         ledger=ledger,
         telegram=adapters.telegram,
-        notion=adapters.notion,
         job_orders=adapters.t6api,
         classifier=adapters.classifier,
         config=config,
         caches=caches,
         matcher=adapters.matcher,
-        deliverables=adapters.notion,
+        deliverables=adapters.t6api,
+        message_filter=adapters.message_filter,
         **worker_options,
     )
 

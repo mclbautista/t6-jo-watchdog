@@ -1,11 +1,10 @@
-"""Contract tests for the credential-safe outbound capture boundary.
+"""Contract tests for the capture boundary: the watchdog masks nothing itself.
 
-These tests deliberately stay separate from the masker corpus tests. They prove
-that the walking pipeline cannot persist or emit credential-bearing source on
-an outbound path while the owner-protected ledger retains the original.
+The owner-protected ledger keeps the text as posted. The text to a model and to a Job Order
+goes through the t6 API, which masks the names and withholds the credentials there; what the
+watchdog logs and reports holds counts and ids, never the posted text.
 """
 
-import json
 import logging
 import tempfile
 import unittest
@@ -13,12 +12,10 @@ from pathlib import Path
 
 from jo_watchdog.app.config import Config
 from jo_watchdog.app.worker import Worker
-from jo_watchdog.core.plan import build_plan
 from jo_watchdog.ledger.db import Ledger
-from tests.fakes import FakeClassifier, FakeNotion, FakeTelegram, update
+from tests.fakes import FakeClassifier, FakeJobOrders, FakeTelegram, update
 
 SOURCE = "PW: swordfish-credential\nordinary detail"
-WITHHELD = "[password withheld – see Telegram message]"
 
 
 def make_config() -> Config:
@@ -28,26 +25,11 @@ def make_config() -> Config:
         ops_chat_id=-100999,
         ops_topic_id=7,
         captured_reaction="✅",
-        job_orders_data_source_id="ds-1",
     )
 
 
-class OutboundBoundaryContractTests(unittest.TestCase):
-    def test_plan_contains_only_masked_outbound_text(self):
-        plan = build_plan(
-            name="PW: swordfish-credential",
-            telegram_key="-100123:42",
-            raw_text=SOURCE,
-        )
-
-        serialized = plan.model_dump_json()
-        self.assertNotIn("swordfish-credential", serialized)
-        self.assertEqual(plan.name, f"PW: {WITHHELD}")
-        self.assertEqual("\n".join(plan.body_blocks), f"PW: {WITHHELD}\nordinary detail")
-
-
-class WalkingCaptureSafetyTests(unittest.IsolatedAsyncioTestCase):
-    async def test_raw_source_stays_in_ledger_but_not_plan_notion_or_logs(self):
+class CaptureSafetyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_text_stays_as_posted_in_the_ledger_and_reaches_the_api_and_no_log(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         data_dir = Path(tmp.name) / "data"
@@ -55,11 +37,10 @@ class WalkingCaptureSafetyTests(unittest.IsolatedAsyncioTestCase):
         ledger = Ledger(data_dir / "ledger.db")
         self.addCleanup(ledger.close)
         telegram = FakeTelegram([update(7, message_id=42, text=SOURCE)])
-        notion = FakeNotion(wrong_name=True)
+        notion = FakeJobOrders(wrong_name=True)
         worker = Worker(
             ledger=ledger,
             telegram=telegram,
-            notion=notion,
             job_orders=notion,
             classifier=FakeClassifier(),
             config=make_config(),
@@ -71,20 +52,22 @@ class WalkingCaptureSafetyTests(unittest.IsolatedAsyncioTestCase):
         message = ledger.get_message("-100123:42")
         assert message is not None
         self.assertEqual(message["text"], SOURCE)
-        self.assertEqual(message["masked_text"], f"PW: {WITHHELD}\nordinary detail")
-        self.assertEqual(message["masked_count"], 1)
-        self.assertTrue(message["masker_version"])
+        # The watchdog keeps no masked copy of its own: the columns hold the values that make
+        # the previous image leave the row alone on a rollback, and no text.
+        self.assertEqual(message["masked_text"], "")
+        self.assertEqual(message["masked_count"], 0)
 
-        persisted_plan = message["plan_json"]
-        notion_payload = json.dumps(notion.created, ensure_ascii=False)
+        # The text goes to the API as posted: the API withholds the credential on its write.
+        [raised] = notion.confirms
+        self.assertEqual(raised.message.header_text, "PW: swordfish-credential")
+        self.assertTrue(raised.fields["source_text"].endswith(SOURCE))
+
+        # A log line holds the property that differs, never the text.
         structured_logs = "\n".join(captured.output)
-        for outbound in (persisted_plan, notion_payload, structured_logs):
-            self.assertNotIn("swordfish-credential", outbound)
-        self.assertIn(WITHHELD, persisted_plan)
-        self.assertIn(WITHHELD, notion_payload)
-        self.assertIn(WITHHELD, structured_logs)
+        self.assertNotIn("swordfish-credential", structured_logs)
+        self.assertIn("read-back mismatch for -100123:42: Name", structured_logs)
 
-    async def test_ignore_log_masks_first_line_before_persistence(self):
+    async def test_ignore_log_keeps_the_first_line_as_written(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         data_dir = Path(tmp.name) / "data"
@@ -92,11 +75,10 @@ class WalkingCaptureSafetyTests(unittest.IsolatedAsyncioTestCase):
         ledger = Ledger(data_dir / "ledger.db")
         self.addCleanup(ledger.close)
         telegram = FakeTelegram([update(7, message_id=42, topic_id=999, text=SOURCE)])
-        notion = FakeNotion()
+        notion = FakeJobOrders()
         worker = Worker(
             ledger=ledger,
             telegram=telegram,
-            notion=notion,
             job_orders=notion,
             classifier=FakeClassifier(),
             config=make_config(),
@@ -106,8 +88,7 @@ class WalkingCaptureSafetyTests(unittest.IsolatedAsyncioTestCase):
 
         row = ledger._conn.execute("SELECT first_line FROM ignore_log").fetchone()
         assert row is not None
-        self.assertEqual(row["first_line"], f"PW: {WITHHELD}")
-        self.assertNotIn("swordfish-credential", row["first_line"])
+        self.assertEqual(row["first_line"], "PW: swordfish-credential")
 
 
 if __name__ == "__main__":

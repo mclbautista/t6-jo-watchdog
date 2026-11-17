@@ -1,7 +1,7 @@
 [
   {
     "name": "moonglow-jo-32",
-    "note": "Response synthesized in the documented OpenRouter Decisions API format (#26); no live Jev capture yet. Replace the response with a live capture during the #27 smoke run.",
+    "note": "Response synthesized in the `llm decide` answer format; no live capture yet.",
     "source_note": "Reconstructed from the Notion row 'MG - TOC - JO #32'; the original Telegram text is not in the redacted corpus.",
     "why": "The link rests on coordinator knowledge (London FF library screener), not on words in the text, so the safe outcome is a hint, never a wrong-confidence link.",
     "source_text": "MG - TOC - JO #32\nSeptember 11 / Friday\n\nTitle: Moonglow FTR\nTask: Export no watermark with English subtitle QuickTime .MOV file in H264 codec\nPurpose: For London FF video library\nSource Drive: Moonglow on the NAS\nWatermark: None\nSubtitle: English\nMode of Transfer: Fromsmash\nLink Settings: with password, 15 day expiry\nDeadline: September 15, 5am\nAssigned: Mira\ncc: @priya",
@@ -16,46 +16,45 @@
       }
     ],
     "expected_request": {
-      "model": "~typesafe/jev-latest",
+      "task_name": "jo_watchdog_match",
       "state": {
         "project": "Moonglow",
         "job_order": "MG - TOC - JO #32\nSeptember 11 / Friday\n\nTitle: Moonglow FTR\nTask: Export no watermark with English subtitle QuickTime .MOV file in H264 codec\nPurpose: For London FF video library\nSource Drive: Moonglow on the NAS\nWatermark: None\nSubtitle: English\nMode of Transfer: Fromsmash\nLink Settings: with password, 15 day expiry\nDeadline: September 15, 5am\nAssigned: Mira\ncc: @priya"
       },
-      "questions": {
-        "c0": {
-          "type": "choice",
-          "instructions": "Does this Job Order belong to the Deliverable 'Moonglow FTR SCR'?",
-          "criteria": {
-            "match": "The Job Order is clearly work for this Deliverable.",
-            "maybe": "The Job Order could be for this Deliverable, but the text doesn't make it clear.",
-            "no": "The Job Order is not for this Deliverable."
-          }
-        }
-      }
+      "question": "Does this Job Order belong to the Deliverable '{candidate}'?",
+      "criteria": {
+        "match": "The Job Order is clearly work for this Deliverable.",
+        "maybe": "The Job Order could be for this Deliverable, but the text doesn't make it clear.",
+        "no": "The Job Order is not for this Deliverable."
+      },
+      "candidates": [
+        "Moonglow FTR SCR"
+      ],
+      "model_hint": null,
+      "require_zdr": false
     },
     "response": {
       "status": 200,
       "body": {
-        "id": "gen-dec-fixture",
-        "model": "typesafe/jev-1.14-20261014",
-        "provider": "TypeSafe",
-        "answers": {
-          "c0": {
-            "type": "choice",
+        "answers": [
+          {
+            "index": 0,
             "choice": "maybe",
-            "confidence": 0.9,
             "probabilities": {
               "match": 0.41,
               "maybe": 0.52,
               "no": 0.07
             }
           }
+        ],
+        "model": "typesafe/jev-1.14-20261014",
+        "provider": "decisions",
+        "tokens": {
+          "prompt": 240,
+          "completion": 40,
+          "total": 280
         },
-        "usage": {
-          "input_tokens": 240,
-          "output_tokens": 40,
-          "cost": 1e-05
-        }
+        "zdr": false
       }
     },
     "expected_verdicts": {
@@ -64,7 +63,7 @@
   },
   {
     "name": "somsom-0155",
-    "note": "Response synthesized in the documented OpenRouter Decisions API format (#26); no live Jev capture yet. Replace the response with a live capture during the #27 smoke run.",
+    "note": "Response synthesized in the `llm decide` answer format; no live capture yet.",
     "source_note": "Reconstructed from the Notion row 'SOMSOM - TOC - #0155'; the original Telegram text is not in the redacted corpus.",
     "why": "The text names wk11 VFX directly.",
     "source_text": "SOMSOM - TOC - #0155\nSeptember 11 / Friday\n\nTitle: Show Hotel\nTask: Download the following mats & copy to ate hdd\n- wk10 d5 patch and rev vfx\n- wk11d1 vfx\nPurpose: For grading\nSource: Lucid (attached ss)\nTransfer: lucid to color grading 4 and ate lara hdd\nDeadline: September 11, 3:30pm\nAssigned to: @user_two\ncc: @priya",
@@ -79,46 +78,45 @@
       }
     ],
     "expected_request": {
-      "model": "~typesafe/jev-latest",
+      "task_name": "jo_watchdog_match",
       "state": {
         "project": "Show Hotel",
         "job_order": "SOMSOM - TOC - #0155\nSeptember 11 / Friday\n\nTitle: Show Hotel\nTask: Download the following mats & copy to ate hdd\n- wk10 d5 patch and rev vfx\n- wk11d1 vfx\nPurpose: For grading\nSource: Lucid (attached ss)\nTransfer: lucid to color grading 4 and ate lara hdd\nDeadline: September 11, 3:30pm\nAssigned to: @user_two\ncc: @priya"
       },
-      "questions": {
-        "c0": {
-          "type": "choice",
-          "instructions": "Does this Job Order belong to the Deliverable 'Show Hotel WK11 VFX'?",
-          "criteria": {
-            "match": "The Job Order is clearly work for this Deliverable.",
-            "maybe": "The Job Order could be for this Deliverable, but the text doesn't make it clear.",
-            "no": "The Job Order is not for this Deliverable."
-          }
-        }
-      }
+      "question": "Does this Job Order belong to the Deliverable '{candidate}'?",
+      "criteria": {
+        "match": "The Job Order is clearly work for this Deliverable.",
+        "maybe": "The Job Order could be for this Deliverable, but the text doesn't make it clear.",
+        "no": "The Job Order is not for this Deliverable."
+      },
+      "candidates": [
+        "Show Hotel WK11 VFX"
+      ],
+      "model_hint": null,
+      "require_zdr": false
     },
     "response": {
       "status": 200,
       "body": {
-        "id": "gen-dec-fixture",
-        "model": "typesafe/jev-1.14-20261014",
-        "provider": "TypeSafe",
-        "answers": {
-          "c0": {
-            "type": "choice",
+        "answers": [
+          {
+            "index": 0,
             "choice": "match",
-            "confidence": 0.9,
             "probabilities": {
               "match": 0.94,
               "maybe": 0.05,
               "no": 0.01
             }
           }
+        ],
+        "model": "typesafe/jev-1.14-20261014",
+        "provider": "decisions",
+        "tokens": {
+          "prompt": 240,
+          "completion": 40,
+          "total": 280
         },
-        "usage": {
-          "input_tokens": 240,
-          "output_tokens": 40,
-          "cost": 1e-05
-        }
+        "zdr": false
       }
     },
     "expected_verdicts": {
@@ -127,7 +125,7 @@
   },
   {
     "name": "ina-toc-30",
-    "note": "Response synthesized in the documented OpenRouter Decisions API format (#26); no live Jev capture yet. Replace the response with a live capture during the #27 smoke run.",
+    "note": "Response synthesized in the `llm decide` answer format; no live capture yet.",
     "source_note": "Verbatim from tests/fixtures/redacted_corpus.json.",
     "why": "A full-film screener upload for Mag-iina is the FTR screener Deliverable.",
     "source_text": "JO CODE: INA-TOC-30\nDate / Day: Sep 10 / Thu\n\nTitle: Mag-iina\nTask/s: Upload screener to fio\nPurpose: For screener\nWatermark: Embedded na sa export\nSubtitle: Embedded na sa export\nMode of Transfer: Frameio\nLink Settings: DL w pw\nSource Material: T6\nNotes: \n\nStatus:\nPending: \nProject File: \nLocpath: '/Volumes/MAG-IINA ONLINE 01/MAG IINA ONLINE/02_EXPORTS /FULL FILM/H264/WITH VIOLATOR/FOR ACFM/INA_FTR_MP4 STEREO_20260909_FOR ACFM.mp4'\n\nDeadline: Sep 10 / Thu\nAssigned to: Mira Lena \ncc: @priya",
@@ -142,46 +140,45 @@
       }
     ],
     "expected_request": {
-      "model": "~typesafe/jev-latest",
+      "task_name": "jo_watchdog_match",
       "state": {
         "project": "Mag-Iina",
         "job_order": "JO CODE: INA-TOC-30\nDate / Day: Sep 10 / Thu\n\nTitle: Mag-iina\nTask/s: Upload screener to fio\nPurpose: For screener\nWatermark: Embedded na sa export\nSubtitle: Embedded na sa export\nMode of Transfer: Frameio\nLink Settings: DL w pw\nSource Material: T6\nNotes: \n\nStatus:\nPending: \nProject File: \nLocpath: '/Volumes/MAG-IINA ONLINE 01/MAG IINA ONLINE/02_EXPORTS /FULL FILM/H264/WITH VIOLATOR/FOR ACFM/INA_FTR_MP4 STEREO_20260909_FOR ACFM.mp4'\n\nDeadline: Sep 10 / Thu\nAssigned to: Mira Lena \ncc: @priya"
       },
-      "questions": {
-        "c0": {
-          "type": "choice",
-          "instructions": "Does this Job Order belong to the Deliverable 'Mag-Iina FTR SCR'?",
-          "criteria": {
-            "match": "The Job Order is clearly work for this Deliverable.",
-            "maybe": "The Job Order could be for this Deliverable, but the text doesn't make it clear.",
-            "no": "The Job Order is not for this Deliverable."
-          }
-        }
-      }
+      "question": "Does this Job Order belong to the Deliverable '{candidate}'?",
+      "criteria": {
+        "match": "The Job Order is clearly work for this Deliverable.",
+        "maybe": "The Job Order could be for this Deliverable, but the text doesn't make it clear.",
+        "no": "The Job Order is not for this Deliverable."
+      },
+      "candidates": [
+        "Mag-Iina FTR SCR"
+      ],
+      "model_hint": null,
+      "require_zdr": false
     },
     "response": {
       "status": 200,
       "body": {
-        "id": "gen-dec-fixture",
-        "model": "typesafe/jev-1.14-20261014",
-        "provider": "TypeSafe",
-        "answers": {
-          "c0": {
-            "type": "choice",
+        "answers": [
+          {
+            "index": 0,
             "choice": "match",
-            "confidence": 0.9,
             "probabilities": {
               "match": 0.92,
               "maybe": 0.07,
               "no": 0.01
             }
           }
+        ],
+        "model": "typesafe/jev-1.14-20261014",
+        "provider": "decisions",
+        "tokens": {
+          "prompt": 240,
+          "completion": 40,
+          "total": 280
         },
-        "usage": {
-          "input_tokens": 240,
-          "output_tokens": 40,
-          "cost": 1e-05
-        }
+        "zdr": false
       }
     },
     "expected_verdicts": {

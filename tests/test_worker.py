@@ -12,9 +12,7 @@ from pathlib import Path
 
 from jo_watchdog.app.config import Config
 from jo_watchdog.ledger.db import Ledger
-from jo_watchdog.ledger.states import State
-
-from tests.fakes import FakeClassifier, FakeNotion, FakeTelegram, update
+from tests.fakes import FakeClassifier, FakeJobOrders, FakeTelegram, update
 
 
 async def no_sleep(_seconds: float) -> None:
@@ -28,7 +26,6 @@ def make_config(**overrides) -> Config:
         ops_chat_id=-100999,
         ops_topic_id=7,
         captured_reaction="✅",
-        job_orders_data_source_id="ds-1",
     )
     base.update(overrides)
     return Config(**base)
@@ -42,11 +39,10 @@ def make_worker(
     tmp = tempfile.TemporaryDirectory()
     ledger = Ledger(Path(tmp.name) / "ledger.db")
     telegram = FakeTelegram(updates)
-    notion = FakeNotion(fail_create=fail_create, wrong_name=wrong_name)
+    notion = FakeJobOrders(fail_create=fail_create, wrong_name=wrong_name)
     worker = Worker(
         ledger=ledger,
         telegram=telegram,
-        notion=notion,
         job_orders=notion,
         classifier=classifier or FakeClassifier(),
         config=make_config(**config_overrides),
@@ -133,8 +129,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan["name"], "first line")
         self.assertEqual(plan["telegram_key"], key)
         self.assertGreater(len(plan["body_blocks"]), 0)
-        # The stored plan's body blocks are what reached Notion, masked.
-        self.assertEqual(notion.created[0]["parent"], {"data_source_id": "ds-1"})
+        # The stored plan's body is what was raised, one paragraph per line.
+        self.assertEqual(len(notion.created[0]["children"]), len("\n".join(plan["body_blocks"]).split("\n")))
 
     async def test_reprocess_does_not_create_second_notion_row(self):
         worker, ledger, telegram, notion, cleanup = make_worker([update(7, message_id=42)])

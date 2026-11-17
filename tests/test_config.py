@@ -24,7 +24,6 @@ MINIMAL = dict(
     intake_topic_id=5,
     ops_chat_id=-100999,
     ops_topic_id=9,
-    job_orders_data_source_id="ds-1",
 )
 
 
@@ -35,22 +34,17 @@ def make(**overrides) -> Config:
 class DefaultsTests(unittest.TestCase):
     def test_reference_defaults(self):
         config = make()
-        self.assertEqual(config.deepseek_base_url, "https://api.deepseek.com")
-        self.assertEqual(config.deepseek_timeout_seconds, 60)
-        self.assertEqual(config.department_aliases, {"TO": "TOC"})
+        self.assertEqual(config.llm_model_hint, "deepseek-chat")
+        self.assertEqual(config.llm_timeout_seconds, 70)
+        self.assertIsNone(config.department_aliases)
+        self.assertEqual(config.raise_poll_seconds, 60)
         self.assertEqual(config.cache_refresh_hours, 6)
         self.assertEqual(config.cache_stale_alert_hours, 24)
-        self.assertEqual(config.fuzzy_min_score, 90)
-        self.assertEqual(config.fuzzy_min_lead, 8)
-        self.assertEqual(config.honorifics, ["ate", "kuya", "sir"])
         self.assertEqual(config.header_date_tolerance_days, 1)
         self.assertEqual(config.retry_schedule_seconds, [30, 120, 300, 600])
         self.assertEqual(config.deadman_stale_minutes, 10)
         self.assertEqual(config.heartbeat_time, "07:00")
         self.assertEqual(config.timezone, "Asia/Manila")
-        self.assertEqual(config.jev_url, "https://openrouter.ai/api/alpha/decisions")
-        self.assertEqual(config.jev_model, "~typesafe/jev-latest")
-        self.assertEqual(config.jev_timeout_seconds, 30)
         self.assertEqual(config.t_link, 0.90)
         self.assertEqual(config.t_hint, 0.50)
 
@@ -72,18 +66,37 @@ class ValidationTests(unittest.TestCase):
             {"retry_schedule_seconds": [30, 0]},
             {"t_link": 1.5},
             {"t_hint": 0.95, "t_link": 0.90},
-            {"fuzzy_min_score": 101},
+            {"fuzzy_min_score": 90},  # removed with the Contact resolver (#144)
+            {"fuzzy_min_lead": 8},
+            {"honorifics": ["ate"]},
+            {"llm_timeout_seconds": 60},  # the API waits up to 60 s for the provider
+            {"job_orders_data_source_id": "ds-1"},  # removed with the Notion client (#143)
+            {"contacts_data_source_id": "ds-1"},
+            {"projects_data_source_id": "ds-1"},
+            {"deliverables_data_source_id": "ds-1"},
+            {"notion_version": "2026-03-11"},
+            {"deepseek_base_url": "x"},  # removed with the DeepSeek client
+            {"jev_url": "https://x.example"},  # removed with the Jev client (#147)
+            {"jev_model": "x"},
+            {"jev_timeout_seconds": 30},
+            {"deepseek_model": "x"},
+            {"deepseek_timeout_seconds": 60},
             {"cache_refresh_hours": 0},
             {"cache_refresh_hours": 30, "cache_stale_alert_hours": 24},
             {"owner_telegram_handle": "has space"},
             {"captured_reaction": " "},
             {"flagged_reaction": " "},
-            {"department_aliases": {"TO": ""}},
+            {"raise_poll_seconds": -1},
             {"unknown_key": 1},
         ]
         for overrides in bad:
             with self.subTest(overrides=overrides), self.assertRaises(ValidationError):
                 make(**overrides)
+
+    def test_an_old_department_alias_map_is_accepted_and_ignored(self):
+        config = make(department_aliases={"TO": "OE"})
+        self.assertIn("department_aliases", config.model_fields_set)
+        self.assertNotIn("department_aliases", make().model_fields_set)
 
     def test_handles_are_normalized_with_at_sign(self):
         config = make(owner_telegram_handle="cyril_owner", standing_cc_telegram_handle="@priya")
@@ -98,10 +111,8 @@ class ValidationTests(unittest.TestCase):
 
 
 LIVE = dict(
-    standing_cc_contact_page_id="c0000000-0000-4000-8000-0000000000cc",
     standing_cc_telegram_handle="@priya",
     owner_telegram_handle="@cyril_owner",
-    job_orders_data_source_id="3d8fb4d5-9e59-8073-a0d0-000b77632947",
 )
 
 
@@ -112,28 +123,17 @@ def live(**overrides) -> Config:
 class ProductionReadinessTests(unittest.TestCase):
     def test_valid_configuration_boots(self):
         require_live_keys(live())
-        require_live_keys(live(standing_cc_contact_page_id="c00000000000400080000000000000cc"))
-        require_live_keys(live(deepseek_base_url="http://localhost:8080"))
-        require_live_keys(live(notion_version="2027-01-31"))
 
     def test_negative_group_chat_ids_are_legitimate(self):
         require_live_keys(live(intake_chat_id=-1001234567890, ops_chat_id=-4242))
 
     def test_audited_invalid_values_are_rejected(self):
         bad = {
-            "job_orders_data_source_id": ["", "ds-1", "not-a-uuid"],
-            "contacts_data_source_id": ["", "xyz"],
-            "projects_data_source_id": [""],
-            "deliverables_data_source_id": [""],
-            "standing_cc_contact_page_id": ["", "short"],
+            "standing_cc_telegram_handle": [""],
             "intake_topic_id": [-5],
             "ops_topic_id": [-1],
-            "deepseek_base_url": ["", "ftp://x.example", "api.deepseek.com", "https://"],
-            "jev_url": ["", "file:///etc/passwd"],
-            "deepseek_model": ["", "  "],
-            "jev_model": [""],
+            "llm_model_hint": ["", "  "],
             "ledger_path": ["", " "],
-            "notion_version": ["", "latest", "2026-3-1"],
         }
         for key, values in bad.items():
             for value in values:
@@ -144,11 +144,10 @@ class ProductionReadinessTests(unittest.TestCase):
 
     def test_all_problems_are_reported_without_values(self):
         with self.assertRaises(ValueError) as ctx:
-            require_live_keys(live(intake_topic_id=-7, jev_url="secret-looking-value"))
+            require_live_keys(live(intake_topic_id=-7, ledger_path="  "))
         message = str(ctx.exception)
         self.assertIn("intake_topic_id", message)
-        self.assertIn("jev_url", message)
-        self.assertNotIn("secret-looking-value", message)
+        self.assertIn("ledger_path", message)
 
     def test_placeholders_are_distinct_from_readiness(self):
         example = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
@@ -159,7 +158,6 @@ class ProductionReadinessTests(unittest.TestCase):
             {
                 "intake_chat_id",
                 "ops_chat_id",
-                "standing_cc_contact_page_id",
                 "standing_cc_telegram_handle",
                 "owner_telegram_handle",
             },
@@ -167,10 +165,44 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertEqual(placeholder_keys(live()), [])
 
 
+class RemovedKeyTests(unittest.TestCase):
+    OLD_EXAMPLE = ROOT / "tests" / "fixtures" / "config.origin-main.yaml"
+
+    def test_the_config_example_before_stage_2_still_loads_and_names_each_removed_key(self):
+        with self.assertLogs("jo_watchdog", level="WARNING") as logs:
+            config = load_config(self.OLD_EXAMPLE)
+        text = "\n".join(logs.output)
+        for key in ("job_orders_data_source_id", "notion_version", "deepseek_model", "jev_url",
+                    "fuzzy_min_score", "honorifics", "standing_cc_contact_page_id"):
+            self.assertIn(key, text)
+        self.assertEqual(len(logs.records), 1)  # one line for all the removed keys
+        self.assertEqual(config.intake_topic_id, 2)
+
+    def test_the_warning_holds_key_names_never_values(self):
+        data = yaml.safe_load(self.OLD_EXAMPLE.read_text(encoding="utf-8"))
+        data["jev_url"] = "https://secret.invalid/path"
+        path = Path(tempfile.mkdtemp()) / "c.yaml"
+        self.addCleanup(path.unlink)
+        path.write_text(yaml.safe_dump(data))
+        with self.assertLogs("jo_watchdog", level="WARNING") as logs:
+            load_config(path)
+        self.assertNotIn("secret.invalid", "\n".join(logs.output))
+
+    def test_a_key_that_was_never_a_config_key_is_still_refused(self):
+        data = yaml.safe_load(self.OLD_EXAMPLE.read_text(encoding="utf-8"))
+        data["never_a_key"] = 1
+        path = Path(tempfile.mkdtemp()) / "c.yaml"
+        self.addCleanup(path.unlink)
+        path.write_text(yaml.safe_dump(data))
+        with self.assertRaises(ValidationError):
+            load_config(path)
+
+
 class ExampleFilesTests(unittest.TestCase):
     def test_config_example_lists_every_key_and_boots(self):
         data = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(set(data), set(Config.model_fields))
+        # department_aliases is accepted and ignored (#151), so the example leaves it out.
+        self.assertEqual(set(data), set(Config.model_fields) - {"department_aliases"})
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
             path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
@@ -210,6 +242,6 @@ class RenamedKeysTests(unittest.TestCase):
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 config = load_config(path)
-        self.assertEqual(config.standing_cc_contact_page_id, "c0000000-0000-4000-8000-0000000000cc")
+        self.assertFalse(hasattr(config, "standing_cc_contact_page_id"))  # removed: ignored
         self.assertEqual(config.standing_cc_telegram_handle, "@priya")
-        self.assertEqual(len([w for w in caught if issubclass(w.category, DeprecationWarning)]), 2)
+        self.assertEqual(len([w for w in caught if issubclass(w.category, DeprecationWarning)]), 1)

@@ -22,7 +22,7 @@ Resolve People, Projects, and Departments against live Notion data while preserv
 - [ ] Fuzzy matching requires configurable score and runner-up-lead thresholds, initially 90 and 8, and every fuzzy-only match creates an untagged ops finding.
 - [ ] Project Codes match as whole tokens, case-insensitively and longest-code-first, and ambiguous or absent matches remain blank.
 - [ ] Department uses the configured small header-alias map and then exact validation against live Notion options; the live option set is not hard-coded.
-- [ ] Assigned supports every resolved assignee, Projects receives only a resolved page ID, Priya is always included in cc, and Coordinator remains blank.
+- [ ] Assigned supports every resolved assignee, Projects receives only a resolved page ID, the standing cc is always included in cc, and Coordinator remains blank.
 - [ ] Unresolved or ambiguous raw mentions remain visible for reporting and are not backfilled automatically later.
 - [ ] Recorded Notion contract fixtures cover pagination, current schema/property names, Contacts `Aliases` and `End of Shift`, persisted snapshots, stale-cache behavior, and empty-cache holds.
 - [ ] Corpus tests cover every exact resolution step, alias collision, fuzzy pass/fail/lead cases, the `@handle` guard, Project Code collisions, and unknown Department behavior.
@@ -58,7 +58,7 @@ A failed refresh writes nothing to `cache_snapshot`; its time and error are logg
 
 ### Configuration
 
-`contacts_data_source_id`, `projects_data_source_id`, `standing_cc_contact_page_id`, `cache_refresh_hours` (6), `cache_stale_alert_hours` (24), `fuzzy_min_score` (90), `fuzzy_min_lead` (8), `department_aliases` (map, e.g. `TO: TOC`), `honorifics` (`ate`, `kuya`, `sir`).
+`contacts_data_source_id`, `projects_data_source_id`, `cache_refresh_hours` (6), `cache_stale_alert_hours` (24), `fuzzy_min_score` (90), `fuzzy_min_lead` (8), `department_aliases` (map, e.g. `TO: TOC`), `honorifics` (`ate`, `kuya`, `sir`).
 
 ## Blocked by
 

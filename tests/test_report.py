@@ -14,7 +14,6 @@ from jo_watchdog.core.report import (
 )
 from jo_watchdog.core.verify import FINDING_ORDER, Finding
 
-WITHHELD = "[password withheld – see Telegram message]"
 ROW = "https://notion.so/row1"
 
 # Every finding line from the #23 table, as Telegram shows it (links as HTML).
@@ -29,6 +28,9 @@ TABLE = [
      'cc "Bea" didn\'t match a contact'),
     (Finding(code="ambiguous_person", params={"role": "assignee", "raw": "Ramon"}),
      'Assignee "Ramon" matches more than one contact'),
+    (Finding(code="assignee_no_person_id", params={"raw": "Lena", "contact": "Lena Cruz"}),
+     'Assignee "Lena" (Lena Cruz) has no T6 Person ID: left out of the Job Order\'s assignees,'
+     " and an End of Shift deadline ignores them"),
     (Finding(code="unresolved_project", params={"raw": "PP2 APC"}),
      'Project mention "PP2 APC" didn\'t match any known Project Code'),
     (Finding(code="unknown_department", params={"token": "XYZ"}),
@@ -96,12 +98,7 @@ class FindingLineTests(unittest.TestCase):
         line = finding_line(Finding(code="exact_repost", params={"url": ROW, "days": 1}))
         self.assertTrue(line.endswith(", 1 day ago"))
 
-    def test_source_fields_are_masked_and_escaped(self):
-        line = finding_line(
-            Finding(code="unresolved_person", params={"role": "assignee", "raw": "pw:hunter2"})
-        )
-        self.assertNotIn("hunter2", line)
-        self.assertIn(WITHHELD, line)
+    def test_source_fields_are_escaped(self):
         line = finding_line(Finding(code="unresolved_project", params={"raw": "<b>&"}))
         self.assertIn("&lt;b&gt;&amp;", line)
 
@@ -168,15 +165,14 @@ class CombinedReportTests(unittest.TestCase):
         )
         self.assertNotIn("@", text)
 
-    def test_name_is_masked(self):
+    def test_name_is_flattened_and_escaped(self):
         text = render_capture_report(
-            name="PW: swordfish",
+            name="MFG - <TOC>\n JO #74",
             findings=[Finding(code="title_blank")],
             page_url=ROW,
             intake_url="https://t",
         )
-        self.assertNotIn("swordfish", text)
-        self.assertIn(f"<code>PW: {WITHHELD}</code>", text)
+        self.assertIn("<code>MFG - &lt;TOC&gt; JO #74</code>", text)
 
 
 class SystemMessageTests(unittest.TestCase):
@@ -196,13 +192,13 @@ class SystemMessageTests(unittest.TestCase):
             cache="People",
             last_refreshed=refreshed,
             now=refreshed + timedelta(hours=30, minutes=20),
-            error="Notion 503 token=pw:abc",
+            error="Notion 503",
         )
         self.assertEqual(
             text,
             "⚠️ Notion cache is stale\n"
             "People: last refreshed Oct 21 07:00 (30 hours ago)\n"
-            f"Last error: Notion 503 token=pw:{WITHHELD}",
+            "Last error: Notion 503",
         )
 
 
@@ -266,10 +262,7 @@ class SingleLineFactTests(unittest.TestCase):
         self.assertIn('Deadline "tom orrow" couldn\'t be turned into a date', lines)
         self.assertEqual(sum(1 for x in lines if x.startswith("#074 already used on")), 1)
 
-    def test_multiline_credential_is_masked_before_flattening(self):
-        line = finding_line(
-            Finding(code="unsure", params={"reasons": "login\npassword:\nhunter2\nthanks"})
-        )
-        self.assertNotIn("hunter2", line)
+    def test_a_multiline_value_is_flattened_to_one_line(self):
+        line = finding_line(Finding(code="unsure", params={"reasons": "login\n  thanks"}))
         self.assertNotIn("\n", line)
-        self.assertIn(WITHHELD, line)
+        self.assertIn("login thanks", line)

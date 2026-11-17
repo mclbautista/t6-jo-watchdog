@@ -11,9 +11,12 @@ from __future__ import annotations
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
+from t6.verbs import JoRaiseInput
 
 from jo_watchdog.core.extraction import Extraction
+from jo_watchdog.core.job_order import RaisePreview
 from jo_watchdog.core.matching import Candidate, MatchResult
+from jo_watchdog.core.resolve import ContactMatch, ProjectMatch
 
 
 class IncomingUpdate(BaseModel):
@@ -96,26 +99,34 @@ class TelegramClient(Protocol):
 
 
 @runtime_checkable
-class NotionClient(Protocol):
-    """The Job Order write. Reads of Job Orders go through ``JobOrderReader``."""
+class JobOrderApi(Protocol):
+    """Job Orders over the t6 API: raise (preview, confirm), recovery and read-back."""
 
-    async def create_page(self, payload: dict) -> PageRef: ...
+    async def preview_job_order(self, inputs: JoRaiseInput) -> RaisePreview:
+        """``jo raise`` without a confirm: nothing is written."""
+        ...
 
+    async def confirm_job_order(self, inputs: JoRaiseInput, token: str) -> str:
+        """Confirm a preview; return the T6 Job Order ID (the page appears later)."""
+        ...
 
-@runtime_checkable
-class JobOrderReader(Protocol):
-    """Job Order recovery and read-back, over the t6 API (``jo find``, ``jo get``)."""
+    async def job_order_page(self, jo_id: str) -> str | None:
+        """The page ID of a raised Job Order, or None while the page is not there yet."""
+        ...
 
-    async def find_job_orders(self, telegram_key: str) -> list[PageRef]:
-        """Job Orders whose Telegram Key equals ``telegram_key``, oldest first.
+    async def find_job_orders(self, chat_id: int, message_id: int) -> list[PageRef]:
+        """Job Orders raised from this message, oldest first.
 
-        Reserved for recovering from an uncertain write; normal success reads
-        back by id.
+        Reserved for recovering from an uncertain write and for the check before a raise.
         """
         ...
 
     async def read_job_order(self, page_id: str) -> dict:
         """The Job Order on a page: ``name``, ``telegram_key``, ``date``, ``deadline``."""
+        ...
+
+    async def withhold_texts(self, texts: list[str]) -> list[str]:
+        """``text withhold``: the texts in order, labelled credentials replaced."""
         ...
 
 
@@ -131,16 +142,41 @@ class DirectoryReader(Protocol):
         """``project list`` items."""
         ...
 
-    async def departments(self) -> list[str]:
-        """Department names, MISC included."""
+
+@runtime_checkable
+class ContactMatcher(Protocol):
+    """Contact matching by the t6 API (``person find``)."""
+
+    async def find_contacts(self, mentions: list[str]) -> list[ContactMatch]:
+        """One answer for each mention, in order, from one call.
+
+        Raises ``T6ApiError`` when the API cannot answer; the caller holds the message.
+        """
         ...
 
 
 @runtime_checkable
+class ProjectMatcher(Protocol):
+    """Project Code lookup by the t6 API (``project resolve`` in text)."""
+
+    async def find_project(self, text: str) -> ProjectMatch:
+        """The Project in rotation that the code in ``text`` names, or an empty match.
+
+        Raises ``T6ApiError`` when the API cannot answer; the caller holds the message.
+        """
+        ...
+
+
+@runtime_checkable
+class Matcher(ContactMatcher, ProjectMatcher, Protocol):
+    """Both lookups; the t6 API seam provides them."""
+
+
+@runtime_checkable
 class Classifier(Protocol):
-    async def classify(
-        self, masked_text: str, origin_lines: list[str] | None
-    ) -> ClassifyResult: ...
+    async def classify(self, text: str, origin_lines: list[str] | None) -> ClassifyResult:
+        """Extract one message. The t6 API masks names and credentials; ``text`` is as posted."""
+        ...
 
 
 @runtime_checkable
@@ -156,6 +192,4 @@ class DeliverableMatcher(Protocol):
 class DeliverableSource(Protocol):
     """Live, project-scoped Deliverable candidates (#26)."""
 
-    async def query_project_deliverables(
-        self, data_source_id: str, project_page_id: str
-    ) -> list[Candidate]: ...
+    async def deliverable_candidates(self, project_page_id: str) -> list[Candidate]: ...

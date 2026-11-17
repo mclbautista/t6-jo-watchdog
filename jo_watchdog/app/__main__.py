@@ -1,10 +1,10 @@
 """Entry point: ``python -m jo_watchdog.app [run|healthcheck|retry] --config config.yaml``.
 
-``run`` (the default) builds the real adapters (aiogram Telegram, httpx Notion)
+``run`` (the default) builds the real adapters (aiogram Telegram, the t6 API)
 and the ledger, then runs the worker loop. Secrets come from the environment
 (``TELEGRAM_BOT_TOKEN`` or, with ``telegram_mode: gateway``, ``WATCHDOG_SECRET``;
-``NOTION_API_KEY``, ``DEEPSEEK_API_KEY``, ``OPENROUTER_API_KEY``); non-secrets come from the
-YAML config.
+``T6_API_URL``, ``T6_API_SECRET``); non-secrets
+come from the YAML config.
 
 ``retry <telegram_key>`` (or ``retry --all-exhausted``) makes exhausted messages
 eligible again without touching their stored plan.
@@ -24,6 +24,14 @@ nothing, ``--apply`` stores real IDs and clears the ones the gateway failed or f
 ``backup <dest>`` writes a consistent copy of the ledger to a new file with SQLite's online
 backup API (#131). It is safe while the watchdog runs, as long as it runs in the watchdog's
 container: ``docker compose exec watchdog python -m jo_watchdog.app backup /tmp/ledger.db``.
+
+``compare-raise [--last N] [--must-match a,b]`` replays the last N written messages through the
+``jo raise`` preview (never the confirm) and counts, per field, how the built value compares
+with what was written; it exits 1 when a ``--must-match`` field differs.
+
+``filter-report [--since DATE] [--until DATE]`` prints the counts of messages by intake filter
+verdict and extraction verdict (#153): counts only, so the owner can read ``drop`` against ``jo``
+before setting ``filter_drops: true``.
 
 ``healthcheck`` exits 0 when the poller's liveness stamp is fresh and 1
 otherwise; the container's ``HEALTHCHECK`` runs it.
@@ -46,7 +54,16 @@ from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from jo_watchdog.adapters.gateway import GatewayTelegramClient
+from jo_watchdog.adapters.t6api import T6ApiError
 from jo_watchdog.app import healthcheck
+from jo_watchdog.app.compare_raise import (
+    DEFAULT_MUST_MATCH,
+    FIELDS,
+    exit_code,
+    render,
+    run_comparison,
+    standing_cc_page_id,
+)
 from jo_watchdog.app.config import (
     gateway_secret,
     load_config,
@@ -81,6 +98,8 @@ async def run(config_path: str) -> None:
     if missing:
         raise RuntimeError(f"missing secrets in the environment: {', '.join(missing)}")
     configure_logging(log_path=Path(config.ledger_path).with_name("jo-watchdog.jsonl"))
+    if "department_aliases" in config.model_fields_set:
+        logging.getLogger("jo_watchdog").warning("config key ignored: department_aliases")
     ledger = Ledger(config.ledger_path, gateway_mode=config.telegram_mode == "gateway")
 
     adapters = build_adapters(config)
@@ -219,6 +238,89 @@ def run_backup(config_path: str, dest: str) -> int:
         print(f"backup: {dest} was written but failed integrity_check: {result}", file=sys.stderr)
         return 1
     print(f"backup written to {dest} (integrity_check ok)")
+    return 0
+
+
+def build_compare_worker(config, ledger):
+    """A worker that can only plan: caches from the API, no Telegram, no extraction."""
+    import tempfile
+
+    from t6.client import Client
+
+    from jo_watchdog.adapters.t6api import T6Api
+    from jo_watchdog.app.caches import CacheManager
+    from jo_watchdog.app.config import t6_api_secret, t6_api_url
+    from jo_watchdog.app.worker import Worker
+
+    t6api = T6Api(Client(t6_api_url(), t6_api_secret()))
+    scratch = Ledger(str(Path(tempfile.mkdtemp(prefix="compare-raise-")) / "scratch.db"))
+    caches = CacheManager(ledger=scratch, directory=t6api, matcher=t6api, config=config)
+    worker = Worker(
+        ledger=ledger,
+        telegram=None,
+        job_orders=t6api,
+        classifier=None,
+        config=config,
+        caches=caches,
+        deliverables=t6api,
+    )
+    worker.compare_scratch = scratch
+    return worker
+
+
+async def compare_raise(config_path: str, last: int, must_match: tuple[str, ...]) -> int:
+    config = load_config(config_path)
+    try:
+        ledger = Ledger.open_read_only(config.ledger_path)
+    except LedgerNotReady as exc:
+        print(f"compare-raise: {exc}", file=sys.stderr)
+        return 2
+    worker = None
+    try:
+        worker = build_compare_worker(config, ledger)
+        await worker.caches.refresh()
+        if not worker.caches.ready:
+            print("compare-raise: the t6 API gave no people or projects", file=sys.stderr)
+            return 2
+        try:
+            standing_cc = await standing_cc_page_id(worker.job_orders, worker.caches.directory)
+        except T6ApiError as exc:
+            print(f"compare-raise: no standing cc from the t6 API ({type(exc).__name__})", file=sys.stderr)
+            return 2
+        report = await run_comparison(
+            ledger, worker, last=last, must_match=must_match, standing_cc=standing_cc
+        )
+        print(render(report))
+        return exit_code(report, must_match)
+    finally:
+        scratch = getattr(worker, "compare_scratch", None)
+        if scratch is not None:
+            scratch.close()
+        ledger.close()
+
+
+def run_compare_raise(config_path: str, last: int, must_match: tuple[str, ...]) -> int:
+    return asyncio.run(compare_raise(config_path, last, must_match))
+
+
+def run_filter_report(config_path: str, since: str | None, until: str | None) -> int:
+    """Counts by (filter verdict, extraction verdict) from a read-only copy of the ledger."""
+    config = load_config(config_path)
+    try:
+        ledger = Ledger.open_read_only(config.ledger_path)
+    except LedgerNotReady as exc:
+        print(f"filter-report: {exc}", file=sys.stderr)
+        return 2
+    try:
+        counts = ledger.filter_counts(since, until)
+    finally:
+        ledger.close()
+    span = f"{since or 'the start'} to {until or 'now'}"
+    print(f"filter verdict / extraction verdict, {span} (filter_drops: {config.filter_drops})")
+    for (filter_verdict, verdict), n in sorted(counts.items()):
+        print(f"{filter_verdict:>12} / {verdict:<8} {n:>6}")
+    if not counts:
+        print("no messages")
     return 0
 
 
@@ -370,6 +472,8 @@ def main(argv: list[str] | None = None) -> int:
             "ingest",
             "backfill-gateway-refs",
             "backup",
+            "compare-raise",
+            "filter-report",
         ],
         help="run the watchdog (default), check the poller's liveness, retry exhausted "
         "messages, reset the polling offset, backfill a missed intake message, "
@@ -409,6 +513,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="for backfill-gateway-refs: write the changes (the default is a dry run)",
     )
+    parser.add_argument(
+        "--last", type=int, default=50, help="for compare-raise: how many written messages"
+    )
+    parser.add_argument(
+        "--must-match",
+        default=",".join(DEFAULT_MUST_MATCH),
+        help="for compare-raise: comma list of fields whose difference gives exit 1",
+    )
+    parser.add_argument("--since", help="for filter-report: first date (YYYY-MM-DD, UTC)")
+    parser.add_argument("--until", help="for filter-report: end date, not included")
     parser.add_argument("--config", default="config.yaml", help="path to config.yaml")
     args, extra = parser.parse_known_args(argv)
     # Group chat ids are negative, so a Telegram Key like ``-100123:42`` looks like
@@ -430,6 +544,20 @@ def main(argv: list[str] | None = None) -> int:
         if not args.telegram_key:
             parser.error("backup needs a destination file")
         return run_backup(args.config, args.telegram_key)
+    if args.command == "compare-raise":
+        must = tuple(f.strip() for f in args.must_match.split(",") if f.strip())
+        unknown = [f for f in must if f not in FIELDS]
+        if unknown or args.last < 1:
+            parser.error(f"compare-raise: --last >= 1; --must-match from {', '.join(FIELDS)}")
+        return run_compare_raise(args.config, args.last, must)
+    if args.command == "filter-report":
+        for value in (args.since, args.until):
+            if value is not None:
+                try:
+                    datetime.strptime(value, "%Y-%m-%d")
+                except ValueError:
+                    parser.error("filter-report dates are YYYY-MM-DD")
+        return run_filter_report(args.config, args.since, args.until)
     if args.command == "retry":
         return run_retry(args.config, args.telegram_key, args.all_exhausted)
     if args.command == "ingest":

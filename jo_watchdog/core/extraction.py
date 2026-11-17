@@ -1,9 +1,11 @@
-"""Pure core: the DeepSeek classify/extract contract.
+"""Pure core: the classify/extract contract.
 
 The model returns verbatim raw strings and a bounded verdict, nothing more
 (*resolve, don't generate*). This module owns the response schema, the single
 user message the model sees, and the system prompt with its version tag. It has
-no I/O so the same contract can be replayed against recorded responses.
+no I/O so the same contract can be replayed against recorded responses. The call itself is
+the t6 API's ``llm run``: it masks the names (and credentials) in the input and puts the
+real ones back in the output.
 """
 
 from __future__ import annotations
@@ -16,10 +18,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from jo_watchdog.core.masker import outbound_text
-
 # Changing the prompt text or the few-shot list means a new tag.
-PROMPT_TAG = "extract-v1"
+PROMPT_TAG = "extract-v2"
 FEWSHOT_PATH = Path(__file__).resolve().parent.parent / "prompts" / f"{PROMPT_TAG}.fewshot.json"
 
 Verdict = Literal["jo", "unsure", "not_jo"]
@@ -153,20 +153,15 @@ def forward_origin_lines(raw_message: dict[str, Any]) -> list[str] | None:
 
 
 def build_user_message(text: str, origin_lines: list[str] | None = None) -> str:
-    """The single user message: masked text, then the origin block for forwards only.
-
-    Masking is enforced here, not trusted from the caller, so no caller can send
-    an unmasked credential to the model.
-    """
-    parts = [outbound_text(text).text]
-    if origin_lines:
-        header = "--- forward origin (context only, not field values) ---"
-        block = "\n".join([header, *origin_lines])
-        parts.append(outbound_text(block).text)
-    return "\n\n".join(parts)
+    """The single user message: the text, then the origin block for forwards only."""
+    if not origin_lines:
+        return text
+    header = "--- forward origin (context only, not field values) ---"
+    return "\n\n".join([text, "\n".join([header, *origin_lines])])
 
 
-SYSTEM_PROMPT = """\
+# The prompt, with the one ``{input}`` marker where the message goes (``llm run`` fills it).
+PROMPT_TEMPLATE = """\
 You read one Telegram message from a post-production intake topic and decide whether it is \
 a Job Order (JO). Reply with one JSON object and nothing else.
 
@@ -194,30 +189,20 @@ Rules:
 - A field the poster left empty, or did not write, is null. Never invent a placeholder; if the \
 poster typed "-", "N/A" or "none", copy it as written.
 - Forward-origin context may inform the verdict but never supplies a field value.
+- Names of people and projects may appear as placeholders such as "[person 1]" or \
+"[project 2]". Copy a placeholder exactly as written, in the same field; never guess the name.
+
+The message:
+{input}
 """
 
 
 @cache
-def fewshot_messages() -> list[dict[str, str]]:
-    """The committed few-shot turns for ``PROMPT_TAG`` (user/assistant pairs)."""
+def fewshot_examples() -> list[dict[str, Any]]:
+    """The committed few-shot turns for ``PROMPT_TAG``: ``input_text`` and the ``output`` object."""
     with open(FEWSHOT_PATH, encoding="utf-8") as fh:
         examples = json.load(fh)["examples"]
-    messages: list[dict[str, str]] = []
-    for example in examples:
-        messages.append({"role": "user", "content": build_user_message(example["input"])})
-        messages.append(
-            {"role": "assistant", "content": json.dumps(example["output"], ensure_ascii=False)}
-        )
-    return messages
-
-
-def build_messages(masked_text: str, origin_lines: list[str] | None = None) -> list[dict]:
-    """The complete chat message list: system prompt, few-shot turns, then the message."""
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        *fewshot_messages(),
-        {"role": "user", "content": build_user_message(masked_text, origin_lines)},
-    ]
+    return [{"input_text": e["input"], "output": e["output"]} for e in examples]
 
 
 # -- extraction scoring (report only, never a CI gate) -----------------------

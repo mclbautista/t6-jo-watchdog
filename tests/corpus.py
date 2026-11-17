@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from jo_watchdog.core.deadline import MANILA
+from jo_watchdog.core.job_order import MANILA
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CORPUS_YEAR = 2026  # the weekday names in the corpus match 2026

@@ -1,6 +1,6 @@
 {
- "prompt_tag": "extract-v1",
- "note": "Few-shot turns for the DeepSeek classify/extract prompt. Corpus examples are disjoint from the held-out set; see tests/fixtures/fewshot_ids.json.",
+ "prompt_tag": "extract-v2",
+ "note": "Few-shot turns for the classify/extract prompt. Corpus examples are disjoint from the held-out set; see tests/fixtures/fewshot_ids.json.",
  "examples": [
   {
    "id": "corpus-0",

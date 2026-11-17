@@ -11,14 +11,13 @@ from jo_watchdog.core.extraction import (
     EXTRACTED_FIELDS,
     FEWSHOT_PATH,
     PROMPT_TAG,
-    SYSTEM_PROMPT,
+    PROMPT_TEMPLATE,
     Extraction,
-    build_messages,
     build_user_message,
+    fewshot_examples,
     field_matches,
     forward_origin_lines,
 )
-from jo_watchdog.core.masker import outbound_text
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -75,8 +74,17 @@ class SchemaTests(unittest.TestCase):
 
 
 class ModelInputTests(unittest.TestCase):
-    def test_plain_message_is_the_masked_text_alone(self):
+    def test_plain_message_is_the_text_alone(self):
         self.assertEqual(build_user_message("hello"), "hello")
+
+    def test_the_text_is_sent_as_posted_because_the_api_masks_it(self):
+        text = "Task: x\nPW: hunter2"
+        self.assertEqual(build_user_message(text), text)
+        self.assertEqual(
+            build_user_message(text, ["Origin type: channel"]),
+            text + "\n\n--- forward origin (context only, not field values) ---"
+            "\nOrigin type: channel",
+        )
 
     def test_forward_origin_lines_cover_each_origin_type(self):
         forwarder = {"first_name": "Lei", "last_name": "Z"}
@@ -108,11 +116,21 @@ class ModelInputTests(unittest.TestCase):
         self.assertFalse(any("1790000000" in line for line in lines))
 
     def test_prompt_has_no_roster_date_or_reply_chain(self):
-        messages = build_messages("Task: x")
-        self.assertEqual(messages[0]["role"], "system")
-        self.assertEqual(messages[-1], {"role": "user", "content": "Task: x"})
-        self.assertNotIn("today", SYSTEM_PROMPT.lower())
-        self.assertNotIn("roster", SYSTEM_PROMPT.lower())
+        self.assertNotIn("today", PROMPT_TEMPLATE.lower())
+        self.assertNotIn("roster", PROMPT_TEMPLATE.lower())
+
+    def test_prompt_template_has_the_one_marker_llm_run_needs_and_names_placeholders(self):
+        self.assertEqual(PROMPT_TEMPLATE.count("{input}"), 1)
+        self.assertEqual(PROMPT_TEMPLATE.count("{"), 1)
+        self.assertIn("[person 1]", PROMPT_TEMPLATE)
+
+    def test_fewshot_examples_are_the_llm_run_examples(self):
+        examples = fewshot_examples()
+        committed = json.loads(FEWSHOT_PATH.read_text("utf-8"))["examples"]
+        self.assertEqual(len(examples), len(committed))
+        for example in examples:
+            self.assertEqual(set(example), {"input_text", "output"})
+            Extraction.model_validate(example["output"])
 
 
 class FewShotTests(unittest.TestCase):
@@ -131,15 +149,17 @@ class FewShotTests(unittest.TestCase):
         self.assertEqual(corpus_ids, [f"corpus-{i}" for i in self.ids["corpus_indices"]])
         self.assertTrue(12 <= len(corpus_ids) <= 18)  # roughly 15
 
-    def test_fewshot_outputs_validate_and_inputs_are_masked_corpus_text(self):
+    def test_fewshot_outputs_validate_and_inputs_are_corpus_text(self):
         expected = {c["corpus_index"]: c["expected"] for c in self.golden["cases"]}
         for example in self.fewshot["examples"]:
             with self.subTest(example["id"]):
                 Extraction.model_validate(example["output"])
-                self.assertEqual(outbound_text(example["input"]).text, example["input"])
                 if example["id"].startswith("corpus-"):
                     index = int(example["id"].split("-")[1])
-                    self.assertEqual(example["input"], outbound_text(self.corpus[index]).text)
+                    withheld = self.corpus[index].replace(
+                        "[REDACTED]", "[password withheld – see Telegram message]"
+                    )
+                    self.assertEqual(example["input"], withheld)
                     output = {f: example["output"][f] for f in EXTRACTED_FIELDS}
                     self.assertEqual(output, expected[index])
 

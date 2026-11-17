@@ -1,13 +1,14 @@
 # JO Telegram Watchdog
 
-Durable Telegram-to-Notion capture for Job Orders. One Python 3.12 asyncio
+Durable Telegram-to-Job-Order capture. One Python 3.12 asyncio
 process polls a configured Telegram intake topic, commits each in-scope message
-to a SQLite ledger before advancing the polling offset, plans the exact Notion
-payload, writes it once, reads it back, and acknowledges with a fixed-meaning
-"captured" reaction.
+to a SQLite ledger before advancing the polling offset, plans the Job Order,
+raises it once through the t6 API (`jo raise`), reads it back, and acknowledges
+with a fixed-meaning "captured" reaction. The watchdog holds one key for studio
+data and models: the t6 API's.
 
 Status: the build tickets (#20 to #27, #39) are closed. Classification and
-extraction (DeepSeek), credential masking, people and project resolution,
+extraction (DeepSeek, through the t6 API), people and project resolution,
 verification with ops reports, retries and the heartbeat, gateway mode and
 Deliverable matching (shadow mode) are all in. The one open issue is #103, the
 planned rename to t6-sixto-watchdog and the move onto t6.
@@ -16,12 +17,11 @@ planned rename to t6-sixto-watchdog and the move onto t6.
 
 Anyone can read this repository and its full history. Never commit:
 
-- `.env` or any real secret: the Telegram bot token, the Notion API key, the
-  DeepSeek or OpenRouter keys, gateway secrets
-- `config.yaml` (it holds the real chat, topic and Notion ids; only
+- `.env` or any real secret: the Telegram bot token, the t6 API key, gateway secrets
+- `config.yaml` (it holds the real chat and topic ids; only
   `config.example.yaml` is tracked)
 - `data/`, `*.db` or any SQLite file (the ledger holds raw JO text, including
-  transfer passwords before masking)
+  transfer passwords)
 - raw Telegram exports or unredacted JOs (the old `old_files/sample-corpus.md`
   stays local and ignored)
 - real client, show or person names, in code, tests, fixtures, prompts or docs
@@ -37,11 +37,11 @@ rotate it; deleting the commit is not enough.
 
 ```
 jo_watchdog/
-  core/       pure: plan builder, payload builder, read-back compare, masker seam,
+  core/       pure: plan builder, `jo raise` fields, read-back compare,
               verification findings, ops-report rendering
   ledger/     SQLite (WAL, versioned schema), offsets, state machine
-  adapters/   Telegram (aiogram-as-client), Notion (httpx, pinned version), DeepSeek,
-              Jev Deliverable matcher (OpenRouter Decisions API)
+  adapters/   Telegram (aiogram-as-client), t6 API (reads, matching, Job Order raise,
+              extraction via `llm run`, Deliverable matching via `llm decide`)
   prompts/    versioned few-shot turns for the classify/extract prompt
   app/        config, worker loop, entry point
 tests/        unittest (runs under pytest too); real SQLite + fake adapters
@@ -52,24 +52,46 @@ map/          design sources (mirrors of the closed design issues)
 tools/        orphan-call reconciliation rehearsal
 ```
 
+## What the API owns and what stays here (stage 2)
+
+The t6 API owns every rule and every credential for Notion and models: the Job Order
+Name, number, Department and deadline, the standing cc (`T6_STANDING_CC` on the API,
+added by `jo raise`), contact and project matching, and the withholding of credentials
+in message text (`text withhold`). The watchdog holds no Notion, OpenRouter or DeepSeek
+key and no masker or allowlist; it calls the API and imports only `t6.client` and
+`t6.verbs`. Before a capture report or a dry-run plan shows a value from the message,
+the watchdog sends it through `text withhold`, one call for each report or plan.
+
+What stays watchdog logic, and why:
+
+- **Which findings tag the standing cc** (`core/verify.py`). The findings are the
+  watchdog's own checks of a capture, so whom its report tags is report logic.
+- **Mention splitting and courtesy stripping** (`core/resolve.py`). They turn a Telegram
+  message into mentions before any rule is applied; the API matches the mentions.
+- **`parse_header_date`**. It feeds only the finding `header_date_mismatch`. The API parses
+  the header for the Name and does not return a date.
+
+An assignee whose Contact has no T6 Person ID is left out of the "end of shift" rule; the
+finding `assignee_no_person_id` is the sign. The API does not take a Contact page ID for
+that yet.
+
 ## Run locally
 
 ```sh
 cp config.example.yaml config.yaml   # fill in every FILL IN value
-cp .env.example .env                 # fill in the six values
+cp .env.example .env                 # fill in the values
 pip install -e '.[dev]'
 set -a; . ./.env; set +a
 python -m jo_watchdog.app --config config.yaml
 ```
 
 `config.yaml` is validated at startup: an unknown key, a bad value, or a
-missing chat id, page id, handle or data source id stops the boot. All six
-values in `.env` (`TELEGRAM_BOT_TOKEN`, `T6_API_URL`, `T6_API_SECRET`,
-`NOTION_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`) must be set. `config.example.yaml` documents every key.
+missing chat id or handle stops the boot. All three
+values in `.env` (`TELEGRAM_BOT_TOKEN`, `T6_API_URL`, `T6_API_SECRET`) must be set.
+`config.example.yaml` documents every key.
 
 Boot also rejects structurally invalid values before any provider call:
-malformed Notion ids, non-positive topic ids, non-http(s) provider URLs, empty
-model aliases or ledger path, and a `notion_version` that is not `YYYY-MM-DD`.
+non-positive topic ids, and an empty model alias or ledger path.
 The error names each bad key, never its value. Negative Telegram chat ids are
 valid. The example file passes this check but still holds `FILL IN`
 placeholders; `smoke.py`'s config step flags those separately.
@@ -93,17 +115,14 @@ seams. The real-account checks live in `smoke.py` and are run by hand.
    message from each topic to a helper bot, or read `getUpdates`) and fill
    `intake_chat_id`, `intake_topic_id`, `ops_chat_id` and `ops_topic_id` in
    `config.yaml`.
-4. Create a Notion internal integration with **Read content** and **Insert
-   content**. Put its token in `.env` as `NOTION_API_KEY`, then share Job
-   Orders, Contacts, Projects and Deliverables with it (each database's `•••`
-   menu, Connections). The watchdog also reads Contacts, Projects, Departments
-   and Job Orders (find and read-back) through the t6 API: put the API address
-   in `.env` as `T6_API_URL` and the key of the `watchdog` service as
-   `T6_API_SECRET`. That key needs the `unmasked` grant, or Project and Job
-   Order names come back masked and resolution fails.
-5. Fill `standing_cc_contact_page_id` (Priya's page in Contacts),
-   `standing_cc_telegram_handle` and `owner_telegram_handle`. Add
-   `DEEPSEEK_API_KEY` and `OPENROUTER_API_KEY` to `.env`.
+4. Put the t6 API address in `.env` as `T6_API_URL` and the key of the `watchdog`
+   service as `T6_API_SECRET`. The watchdog reads Contacts, Projects and
+   Departments, raises and finds Job Orders, and runs extraction and Deliverable
+   matching through it. That key needs the `unmasked` and `llm` grants and the Job
+   Order raise permission, or names come back masked and resolution fails.
+5. Fill `standing_cc_telegram_handle` (the handle the capture report tags) and
+   `owner_telegram_handle`. The standing cc on every Job Order is added by the API:
+   set `T6_STANDING_CC` there before this version runs.
 6. Prepare a local data directory and run the smoke check until it passes (the
    container does not use this directory; it keeps its ledger in a named volume):
 
@@ -117,7 +136,7 @@ seams. The real-account checks live in `smoke.py` and are run by hand.
    `captured_reaction` to one of them and re-run. Then post a test JO in
    the intake topic and run once more with `--live-telegram --live-message-id <its
    Telegram message id>` (watchdog stopped) to capture that one real message end
-   to end. Delete the smoke rows it creates in Notion by hand.
+   to end. Delete the smoke Job Orders it raises by hand.
 7. Create the ledger's volume, start the container and watch for the first capture
    in Notion and the next 07:00 heartbeat in the ops topic:
 
@@ -228,6 +247,12 @@ JO_WATCHDOG_TAG=previous docker compose up -d --no-build
 Ledger migrations are forward-only and stay backward-compatible for one
 release, so the previous image can read a ledger the current one migrated.
 
+Before a rollback, wait until no row is `received`, `extracted`, `planned` or `writing`
+(`SELECT COUNT(*) FROM messages WHERE state IN ('received','extracted','planned','writing')`
+is 0). The previous image reads the model input and the page's source text from
+`masked_text`, which the current image leaves empty, so a row in flight at the switch would
+be classified or written without its text. Restore `.env` and `config.yaml` from backup too.
+
 ### Gateway mode (Sixto gateway)
 
 With `telegram_mode: gateway` the watchdog no longer holds the bot token. The
@@ -238,7 +263,7 @@ and core are unchanged, and the deadman, heartbeat and ops outbox stay here.
 
 ```yaml
 telegram_mode: gateway
-gateway_url: "http://192.168.88.151:8780"
+gateway_url: "http://gateway.example:8780"
 ```
 
 In `.env`, set `WATCHDOG_SECRET` (the same value as the gateway's
@@ -309,14 +334,15 @@ read the gateway's `poll_state` as `T`, stop the watchdog and run
 ### Dry-run (rollback control)
 
 `dry_run: false` is the default. Setting `dry_run: true` and restarting stops
-each new message at `planned`: the masked plan goes to the ops topic, and
-nothing is written to Notion and no reaction is set. Setting it back to `false`
+each new message at `planned`: the plan goes to the ops topic (its free text as a character count, every other
+value sent through `text withhold` first), and
+no Job Order is raised and no reaction is set. Setting it back to `false`
 resumes the held plans exactly as stored.
 
 ### Deliverable linking
 
 Deliverable linking is a separate, staged switch. `deliverable_link_enabled`
-stays `false` (Jev runs in shadow mode and its decisions are kept, but no
+stays `false` (the matcher runs in shadow mode and its decisions are kept, but no
 relation is written) until the owner turns it on, independently of capture
 going live.
 
@@ -329,10 +355,10 @@ heartbeat in the ops topic is the signal** that the watchdog is down, and
 whoever notices should restart it and check the intake topic for posts it
 missed.
 
-## Extraction report (DeepSeek, not a CI gate)
+## Extraction report (through the t6 API, not a CI gate)
 
 ```sh
-DEEPSEEK_API_KEY=... python -m jo_watchdog.app.extraction_report --config config.yaml --save run.json
+T6_API_URL=... T6_API_SECRET=... python -m jo_watchdog.app.extraction_report --config config.yaml --save run.json
 python -m jo_watchdog.app.extraction_report --from run.json   # re-score offline
 ```
 

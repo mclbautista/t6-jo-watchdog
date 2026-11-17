@@ -37,21 +37,23 @@ keys before commit, so tables that reference `messages(id)` stay valid.
 | first_line         | TEXT    | first non-empty line (Name fallback)               |
 | state              | TEXT    | one of `received`,`extracted`,`planned`,`writing`,`written`,`done`,`ignored` |
 | plan_json          | TEXT    | the exact stored plan (Name, Telegram Key, blocks) |
-| notion_page_id     | TEXT    | Notion page id after a successful create           |
+| notion_page_id     | TEXT    | Notion page id once the Job Order's page exists     |
+| jo_id              | TEXT    | v12 (#134): the T6 Job Order ID the `jo raise` confirm returned; NULL before that and for rows written earlier. The page appears a few seconds later; while the row is `writing` a retry polls `jo get` with this ID and never raises again |
 | readback_mismatch  | TEXT    | mismatch detail from read-back comparison          |
 | findings_json      | TEXT    | v5: final findings (`[{code, params}]`), plan plus read-back |
 | reaction_state     | TEXT    | v5: capture reaction (👍, or 🤔 when findings were stored), `pending` \| `set` \| `failed` |
 | created_at         | TEXT    | ISO-8601 UTC                                       |
 | updated_at         | TEXT    | ISO-8601 UTC                                       |
-| masked_text        | TEXT    | outbound-safe representation of `text` (v2)        |
-| masker_version     | TEXT    | deterministic masker version used for this row (v2)|
-| masked_count       | INTEGER | number of credential assignments withheld (v2)     |
+| masked_text        | TEXT    | no longer used; `''` on rows made since #143, so the previous image does not backfill them (v2) |
+| masker_version     | TEXT    | no longer used; `t6-api` on new rows (v2)          |
+| masked_count       | INTEGER | no longer used; `0` on new rows (v2)               |
 | posted_at          | TEXT    | Telegram message date, ISO-8601 with `+08:00` (v3; backfilled from `raw_source`) |
 | attempts           | INTEGER | NOT NULL DEFAULT 0; failed attempts at the current stage, reset on every successful state change (v3) |
 | next_attempt_at    | TEXT    | ISO-8601 UTC; when a failed stage may run again (v3) |
-| last_error         | TEXT    | masked `<failure class>: <detail>` of the last failed attempt (v3) |
+| last_error         | TEXT    | `<failure class>: <detail>` of the last failed attempt (v3) |
 | verdict            | TEXT    | DeepSeek verdict: `jo`, `unsure` or `not_jo` (v3)  |
-| ignore_reason      | TEXT    | `not_jo` or `no_text` for `ignored` rows (v3)      |
+| ignore_reason      | TEXT    | `not_jo`, `no_text` or `filtered` for `ignored` rows (v3) |
+| filter_verdict     | TEXT    | v13 (#153): the `llm filter` verdict `pass`, `drop`, `unsure` or `unavailable` (a failed call); NULL when not filtered |
 | exhausted_at       | TEXT    | v7: ISO-8601 UTC when the retry schedule ran out; NULL otherwise. An exhausted row keeps its state and plan, is never picked up again, and is made eligible by `retry` |
 | written_at         | TEXT    | v8 (#54): ISO-8601 UTC, set once in the `mark_written` transaction and never updated; NULL for rows written before v8 |
 | jo_key             | TEXT    | v6, reshaped in v9 (#93): `<Project page id>\|<jo_number_int>`, set at planning only when both resolve; NULL otherwise. JO Numbers are one counter per project, so the Department is not part of it |
@@ -100,13 +102,13 @@ One row per model call, successful or not.
 | purpose         | TEXT    | NOT NULL; `classify_extract` or `deliverable_match`    |
 | requested_model | TEXT    | NOT NULL; the configured alias (unpinned)              |
 | returned_model  | TEXT    | the model id the provider reported                     |
-| prompt_tag      | TEXT    | NOT NULL; e.g. `extract-v1`                            |
-| masker_version  | TEXT    | NOT NULL                                               |
+| prompt_tag      | TEXT    | NOT NULL; e.g. `extract-v2`                            |
+| masker_version  | TEXT    | NOT NULL; `t6-api` (the API masks model inputs)        |
 | input_tokens    | INTEGER |                                                        |
 | output_tokens   | INTEGER |                                                        |
 | latency_ms      | INTEGER |                                                        |
 | outcome         | TEXT    | NOT NULL; `ok`, `invalid_json`, `schema_violation`, `empty_content`, `timeout`, `api_error` |
-| error           | TEXT    | masked error detail                                    |
+| error           | TEXT    | error detail (ids and classes, no posted text)         |
 | detail_json     | TEXT    | Jev candidates and probabilities (#26)                 |
 | created_at      | TEXT    | NOT NULL, ISO-8601 UTC; indexed for the heartbeat      |
 
@@ -122,7 +124,7 @@ Single row (`id = 1`); the highest committed Telegram update id.
 ### `ignore_log`
 
 One row per out-of-scope update (wrong chat or topic), and one per message that
-moves to `ignored` (`not_jo` or `no_text`, with the masked first line).
+moves to `ignored` (`not_jo` or `no_text`, with the first line as posted).
 
 | column     | type    | notes                          |
 |------------|---------|--------------------------------|
@@ -131,7 +133,7 @@ moves to `ignored` (`not_jo` or `no_text`, with the masked first line).
 | message_id | INTEGER |                                |
 | update_id  | INTEGER |                                |
 | reason     | TEXT    | e.g. `out_of_scope_chat`, `edit_unknown_message` (v6) |
-| first_line | TEXT    | masked-ready first line        |
+| first_line | TEXT    | first line as posted           |
 | created_at | TEXT    | ISO-8601 UTC                   |
 
 ### `cache_snapshot` (v4, #22)
@@ -171,11 +173,11 @@ Telegram accepts a post but before the row is marked `sent` re-posts it.
 | kind                | TEXT    | `capture_report`, `edit_after_capture`, `stale_cache`, `outage_alert`, `heartbeat`, `dry_run_plan`, `message_gap` |
 | chat_id             | INTEGER | ops chat id                                            |
 | topic_id            | INTEGER | ops forum topic id                                     |
-| text                | TEXT    | rendered Telegram HTML; every source field masked      |
+| text                | TEXT    | rendered Telegram HTML; free text as a count, never the body |
 | state               | TEXT    | `pending` \| `accepted` \| `sent` \| `failed`          |
 | attempts            | INTEGER | send attempts so far (default 0)                       |
 | next_attempt_at     | TEXT    | ISO-8601 UTC; null = due now                           |
-| last_error          | TEXT    | masked error of the last failed attempt                |
+| last_error          | TEXT    | error of the last failed attempt                       |
 | telegram_message_id | INTEGER | id of the posted ops message once `sent`               |
 | created_at          | TEXT    | ISO-8601 UTC                                           |
 | sent_at             | TEXT    | ISO-8601 UTC                                           |
@@ -269,18 +271,19 @@ retry delay.
 `received` → `extracted` → `planned` → `writing` → `written` → `done`, and
 `received` → `ignored` (terminal).
 
-Version 2 adds `masked_text`, `masker_version`, and `masked_count`; opening a
-version-1 ledger backfills those fields and rewrites any stored plan through the
-same outbound boundary. Version 3 adds `extracted` (validated DeepSeek output)
+Version 2 adds `masked_text`, `masker_version`, and `masked_count`. The watchdog no longer
+masks anything (the t6 API masks what it sends a model and withholds credentials from what it
+writes), so a row made since then holds `''`, `t6-api` and `0`: a NULL in any of them makes the previous image rewrite the row's stored plan, so they are never NULL. An old ledger is not backfilled.
+Version 3 adds `extracted` (validated DeepSeek output)
 and `ignored` (`not_jo` and `no_text`). A failed classify call leaves the row in
 `received` with `attempts` incremented and `next_attempt_at` set; there is no
 partial-row fallback. `writing` is the crash-window state:
-before the Notion create call a row moves to `writing`. The created page id is stored
-at once, so a later read-back failure retries only the retrieve. A `writing` row
-with no stored page id is uncertain: after at least the first retry delay the
-watchdog queries Notion by `Telegram Key`, adopts the one match, creates only
-when there is none, and reports (never merges or deletes) several. Normal
-success never queries by `Telegram Key`. The move to `planned` and the stored
+before the `jo raise` call a row moves to `writing`. The confirm returns the T6 Job
+Order ID (`jo_id`), stored at once; the page ID follows when the page appears, and a
+later read-back failure retries only the retrieve. A `writing` row with neither is
+uncertain: after at least the first retry delay the watchdog asks `jo find` with the
+chat and message ID, adopts the one match, raises only when there is none, and
+reports (never merges or deletes) several. The move to `planned` and the stored
 plan commit in one transaction.
 
 Migrations are keyed by number and applied in ascending order of the numbers

@@ -15,7 +15,7 @@ from unittest import mock
 from jo_watchdog.app.config import Config
 from jo_watchdog.app.worker import Worker
 from jo_watchdog.ledger.db import Ledger, fmt_utc
-from tests.fakes import FakeClassifier, FakeNotion, FakeTelegram
+from tests.fakes import FakeClassifier, FakeJobOrders, FakeTelegram
 
 KEY = "-100123:42"
 OWNER = "owner"
@@ -48,7 +48,6 @@ def make_config(**overrides) -> Config:
         standing_cc_telegram_handle="priya",
         owner_telegram_handle=OWNER,
         captured_reaction="✅",
-        job_orders_data_source_id="ds-1",
     )
     base.update(overrides)
     return Config(**base)
@@ -77,7 +76,7 @@ class Pipeline:
         patcher.start()
         test.addCleanup(patcher.stop)
         self.telegram = telegram or FakeTelegram(list(updates))
-        self.notion = notion or FakeNotion()
+        self.notion = notion or FakeJobOrders()
         self.classifier = classifier or FakeClassifier()
         self.caches = caches
         self.config = make_config(**config)
@@ -101,7 +100,6 @@ class Pipeline:
         kwargs = dict(
             ledger=ledger,
             telegram=self.telegram,
-            notion=self.notion,
             job_orders=self.notion,
             classifier=self.classifier,
             config=self.config,

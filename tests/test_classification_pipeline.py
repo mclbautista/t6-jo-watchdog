@@ -2,13 +2,12 @@
 
 import json
 import unittest
-from pathlib import Path
 
-import httpx
+from t6.client import Unavailable
 
-from jo_watchdog.adapters.deepseek import DeepSeekClassifier
+from jo_watchdog.adapters.t6llm import T6LlmClassifier
 from jo_watchdog.ledger.states import State
-from tests.fakes import FakeClassifier, failed_result, ok_result, update
+from tests.fakes import FakeClassifier, FakeLlmClient, failed_result, llm_answer, ok_result, update
 from tests.test_worker import make_worker
 
 KEY = "-100123:42"
@@ -41,14 +40,14 @@ class VerdictTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["findings"], [])
         self.assertEqual(result["trace"]["returned_model"], "deepseek-chat-v9")
         self.assertEqual(result["trace"]["requested_model"], "deepseek-chat")
-        self.assertEqual(result["trace"]["prompt_tag"], "extract-v1")
+        self.assertEqual(result["trace"]["prompt_tag"], "extract-v2")
         self.assertEqual(result["trace"]["input_tokens"], 1200)
 
         (call,) = rows(ledger, "SELECT * FROM llm_calls")
         self.assertEqual(call["provider"], "deepseek")
         self.assertEqual(call["purpose"], "classify_extract")
         self.assertEqual(call["outcome"], "ok")
-        self.assertEqual(call["masker_version"], "1.0.0")
+        self.assertEqual(call["masker_version"], "t6-api")
         self.assertEqual(call["latency_ms"], 850)
 
     async def test_unsure_is_written_and_records_a_finding(self):
@@ -58,7 +57,7 @@ class VerdictTests(unittest.IsolatedAsyncioTestCase):
         findings = ledger.stage_result(KEY, "extract")["findings"]
         self.assertEqual(findings, [{"code": "unsure", "reasons": "Looks like unsure."}])
 
-    async def test_not_jo_is_ignored_with_masked_first_line(self):
+    async def test_not_jo_is_ignored_with_its_first_line_as_written(self):
         ledger, telegram, notion, _ = await self.run_one(
             ok_result("not_jo"), text="PW: hunter2 salamat po\nmore"
         )
@@ -69,7 +68,7 @@ class VerdictTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(telegram.reactions, [])
         (logged,) = rows(ledger, "SELECT * FROM ignore_log")
         self.assertEqual(logged["reason"], "not_jo")
-        self.assertNotIn("hunter2", logged["first_line"])
+        self.assertEqual(logged["first_line"], "PW: hunter2 salamat po")
         self.assertEqual(ledger.stage_result(KEY, "extract")["extraction"]["verdict"], "not_jo")
 
     async def test_no_text_bypasses_the_model(self):
@@ -98,7 +97,7 @@ class VerdictTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ModelInputTests(unittest.IsolatedAsyncioTestCase):
-    async def test_model_sees_masked_text_and_forward_origin_only(self):
+    async def test_the_classifier_gets_the_text_as_posted_and_forward_origin_only(self):
         classifier = FakeClassifier()
         extra = {
             "from": {"first_name": "Lei"},
@@ -110,8 +109,8 @@ class ModelInputTests(unittest.IsolatedAsyncioTestCase):
         )
         self.addCleanup(cleanup)
         await worker.run_once()
-        ((masked_text, origin),) = classifier.calls
-        self.assertNotIn("hunter2", masked_text)
+        ((text, origin),) = classifier.calls
+        self.assertEqual(text, "Task: x\nPW: hunter2")  # the t6 API masks it
         self.assertEqual(
             origin,
             ["Origin type: hidden_user", "Forwarded by: Lei", "Originally from: Ben"],
@@ -124,35 +123,21 @@ class ModelInputTests(unittest.IsolatedAsyncioTestCase):
         await worker.run_once()
         self.assertIsNone(classifier.calls[0][1])
 
-    async def test_worker_to_deepseek_adapter_sends_no_credential(self):
-        recorded = json.loads(
-            (Path(__file__).parent / "fixtures" / "deepseek_recorded.json").read_text("utf-8")
-        )["jo"]
-        seen: list[httpx.Request] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen.append(request)
-            return httpx.Response(recorded["status"], json=recorded["body"])
-
-        client = httpx.AsyncClient(
-            base_url="https://api.deepseek.test", transport=httpx.MockTransport(handler)
-        )
-        classifier = DeepSeekClassifier("sk-test", client=client)
-        self.addAsyncCleanup(classifier.close)
-        extra = {
-            "from": {"first_name": "Lei pw: origin-secret"},
-            "forward_origin": {"type": "channel"},
-        }
+    async def test_worker_to_llm_adapter_sends_one_request_with_the_text_as_posted(self):
+        client = FakeLlmClient(llm_answer("jo"))
+        extra = {"from": {"first_name": "Lei"}, "forward_origin": {"type": "channel"}}
         worker, ledger, *_, cleanup = make_worker(
             [update(7, message_id=42, text="MFG - TOC - JO #74\nPW: hunter2", extra=extra)],
-            classifier=classifier,
+            classifier=T6LlmClassifier(client, model_hint="deepseek-chat"),
         )
         self.addCleanup(cleanup)
         await worker.run_once()
-        self.assertEqual(len(seen), 1)
-        outbound = seen[0].content.decode("utf-8")
-        self.assertNotIn("hunter2", outbound)
-        self.assertNotIn("origin-secret", outbound)
+        (request,) = client.requests
+        self.assertTrue(request.input_text.startswith("MFG - TOC - JO #74\nPW: hunter2\n\n---"))
+        self.assertEqual(request.masking_preset, "names")  # names and credentials: the API's job
+        (call,) = rows(ledger, "SELECT * FROM llm_calls")
+        self.assertEqual((call["outcome"], call["prompt_tag"]), ("ok", "extract-v2"))
+        self.assertEqual((call["input_tokens"], call["output_tokens"]), (6180, 214))
 
 
 class FailureTests(unittest.IsolatedAsyncioTestCase):
@@ -175,40 +160,50 @@ class FailureTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(call["outcome"], outcome)
                 cleanup()
 
-    async def test_malformed_deepseek_response_is_one_retryable_failed_attempt(self):
-        import httpx
-
-        from jo_watchdog.adapters.deepseek import DeepSeekClassifier
-        from tests.test_deepseek import MALFORMED_ENVELOPES
-
-        for name, body in MALFORMED_ENVELOPES.items():
-            if name.startswith("usage"):
-                continue  # still a successful call
-            with self.subTest(name):
-                calls = []
-
-                def handler(request, body=body):
-                    calls.append(request)
-                    return httpx.Response(200, json=body)
-
-                client = httpx.AsyncClient(
-                    base_url="https://api.deepseek.test", transport=httpx.MockTransport(handler)
-                )
+    async def test_an_unusable_llm_answer_is_one_retryable_failed_attempt(self):
+        cases = {
+            "empty_content": "empty_content",
+            "malformed_json": "invalid_json",
+            "schema_mismatch": "schema_violation",
+            "wrong_shape": "schema_violation",
+            "provider_failure": "api_error",
+            "provider_timeout": "timeout",
+        }
+        for recording, outcome in cases.items():
+            with self.subTest(recording):
+                client = FakeLlmClient(llm_answer(recording))
                 worker, ledger, telegram, notion, cleanup = make_worker(
                     [update(7, message_id=42)],
-                    classifier=DeepSeekClassifier("sk-test", client=client),
+                    classifier=T6LlmClassifier(client, model_hint="deepseek-chat"),
                 )
                 await worker.run_once()  # no uncaught error
                 msg = ledger.get_message(KEY)
                 self.assertEqual(msg["state"], "received")
                 self.assertEqual(msg["attempts"], 1)
                 self.assertIsNotNone(msg["next_attempt_at"])
-                self.assertIn("malformed envelope", msg["last_error"])
-                self.assertEqual(len(calls), 1)  # no repair call
+                self.assertEqual(len(client.requests), 1)  # no repair call
                 self.assertEqual(notion.created, [])
                 (call,) = rows(ledger, "SELECT outcome FROM llm_calls")
-                self.assertEqual(call["outcome"], "api_error")
+                self.assertEqual(call["outcome"], outcome)
                 cleanup()
+
+    async def test_a_down_api_holds_the_message_and_retries_then_extraction_succeeds(self):
+        client = FakeLlmClient(Unavailable("connection refused"), llm_answer("jo"))
+        worker, ledger, telegram, notion, cleanup = make_worker(
+            [update(7, message_id=42)],
+            classifier=T6LlmClassifier(client, model_hint="deepseek-chat"),
+        )
+        self.addCleanup(cleanup)
+        await worker.run_once()
+        msg = ledger.get_message(KEY)
+        self.assertEqual((msg["state"], msg["attempts"]), ("received", 1))
+        self.assertEqual(notion.created, [])  # nothing is raised until extraction succeeds
+
+        ledger._conn.execute("UPDATE messages SET next_attempt_at = '2000-01-01T00:00:00Z'")
+        await worker.drain_once()
+        msg = ledger.get_message(KEY)
+        self.assertEqual((msg["state"], msg["attempts"]), ("done", 0))
+        self.assertEqual(len(notion.created), 1)
 
     async def test_retry_waits_then_succeeds_and_resets_attempts(self):
         classifier = FakeClassifier(failed_result("timeout"), ok_result("jo"))
