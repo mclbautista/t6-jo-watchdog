@@ -184,15 +184,21 @@ docker compose exec watchdog python -m jo_watchdog.app retry --all-exhausted --c
 
 `retry` clears the attempt count and never changes the stored plan.
 
-A refusal of an extraction call by rule (`masking`, `template`, `schema`, `policy`,
-`allow`, `size`) is not an outage and is not retried on that schedule. At start the
-watchdog runs the extraction prompt through `llm run` with `dry_run` (the real template,
-schema and few-shot turns, a fixed harmless text, no provider call). If the API refuses
-the prompt, schema or policy, extraction is held: messages stay `received` with no attempt
-spent, the ops topic gets one alert with the rule and the reason (the reason names the
-part, never a word), and the check re-runs every 15 minutes until it passes. An API that
-does not answer at start does not hold anything. A refusal of one message alone (its
-input, or its size) gives that message up at once with the usual alert, until `retry`.
+A refused extraction call (rule `masking`, `template`, `schema`, `policy`, `allow` or
+`size`) is not an outage. The worker does not read the reason: it runs the prompt check
+at once. The check is `llm run` with `dry_run` (the real template, schema and few-shot
+turns, a fixed harmless text, no provider call), and it runs the same way once at start.
+- Refused: extraction is held. Messages stay `received` with no attempt spent, the ops
+  topic gets one alert with the rule and the reason (the reason names the part, never a
+  word), and the check re-runs every 15 minutes until it passes.
+- Passed: the refusal belongs to that message. It is given up at once with its own alert
+  ("Extraction refused by the t6 API ... message given up") until `retry`.
+- No answer, or an API that ignores `dry_run` (t6 0.6.8 makes a real provider call with the
+  harmless text, so the check is logged once as unsupported): nothing is held, and the
+  refusal is retried on the usual schedule.
+
+A refused call writes no `llm_calls` row. The hold lives in memory, so a restart re-checks
+and can alert once more per start.
 
 If the poller stops making progress for `deadman_stale_minutes` (10), the
 process exits non-zero so the restart policy brings it back. At `heartbeat_time`

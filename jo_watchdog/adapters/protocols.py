@@ -81,16 +81,15 @@ class ClassifyResult(BaseModel):
     latency_ms: int | None = None
     retry_after: float | None = None  # seconds, from the provider's Retry-After header
     # A refusal a retry cannot fix, as "rule: reason" (the API's reason names the part, never
-    # a word). ``hold`` is set when the prompt, schema or provider policy is refused, so every
-    # message would be: the worker then stops taking messages through extraction.
+    # a word). Whether it is this message or the prompt is decided by ``check_prompt``.
     refusal: str | None = None
-    hold: bool = False
 
 
 class PromptCheck(BaseModel):
-    """The start check (``llm run`` with ``dry_run``): ``ok``, ``refused`` or ``unavailable``."""
+    """The start check (``llm run`` with ``dry_run``). ``unsupported``: an API that ignores
+    ``dry_run`` (it made a real call), so nothing is known."""
 
-    status: Literal["ok", "refused", "unavailable"]
+    status: Literal["ok", "refused", "unavailable", "unsupported"]
     reason: str | None = None  # "rule: reason" when refused
 
 

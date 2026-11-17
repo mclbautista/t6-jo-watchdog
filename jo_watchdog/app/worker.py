@@ -27,6 +27,7 @@ from jo_watchdog.adapters.protocols import (
     GatewayRef,
     JobOrderApi,
     PageRef,
+    PromptCheck,
     TelegramClient,
 )
 from jo_watchdog.adapters.t6api import ApiUnreachable, KeyAlreadyHeld, raise_input
@@ -74,6 +75,7 @@ from jo_watchdog.core.report import (
     render_heartbeat,
     render_heartbeat_failed_alert,
     render_message_gap,
+    render_message_refusal,
     render_outage_alert,
     render_stale_cache,
 )
@@ -412,11 +414,16 @@ class Worker:
         if self.extraction_hold is not None:
             return State.RECEIVED
         result = await self.classifier.classify(msg["text"], forward_origin_lines(raw_message))
-        if result.refusal and result.hold:
-            # Every message would be refused: hold extraction, no attempt spent.
-            self._hold_extraction(result.refusal)
-            return State.RECEIVED
-        trace = result.model_dump(exclude={"extraction", "retry_after", "refusal", "hold"})
+        give_up = False
+        if result.refusal:
+            # The dry run is the only authority: the prompt is refused (hold, no attempt spent),
+            # or this message is (give it up), or nobody can say (retry as an api_error).
+            check = await self._run_check()
+            if check.status == "refused":
+                self._hold_extraction(check.reason or result.refusal)
+                return State.RECEIVED
+            give_up = check.status == "ok"
+        trace = result.model_dump(exclude={"extraction", "retry_after", "refusal"})
         call = {
             "provider": "deepseek",
             "purpose": "classify_extract",
@@ -429,10 +436,14 @@ class Worker:
                 key,
                 call=call,
                 # A refusal of this message alone is never retried: given up at once, one alert.
-                schedule=() if result.refusal else self.config.retry_schedule_seconds,
+                schedule=() if give_up else self.config.retry_schedule_seconds,
                 now=self.clock(),
                 retry_after=result.retry_after,
-                on_exhausted=self._outage_alert(msg, CLASSIFICATION),
+                on_exhausted=(
+                    self._refusal_alert(msg, result.refusal or "")
+                    if give_up
+                    else self._outage_alert(msg, CLASSIFICATION)
+                ),
             )
             if failure.exhausted:
                 log.error("classifier %s for %s; retries exhausted", result.outcome, key)
@@ -475,13 +486,15 @@ class Worker:
         )
         log.error("extraction on hold, the API refused the prompt: %s", refusal)
 
+    async def _run_check(self) -> PromptCheck:
+        check = getattr(self.classifier, "check_prompt", None)
+        return await check() if check else PromptCheck(status="unavailable")
+
     async def check_prompt(self) -> None:
         """The start check, and its re-run while held: a refusal holds extraction, an answer
-        that is ok releases it, an API that does not answer changes nothing."""
-        check = getattr(self.classifier, "check_prompt", None)
-        if check is None:
-            return
-        result = await check()
+        that is ok releases it, anything else (no answer, an API without dry_run) changes
+        nothing."""
+        result = await self._run_check()
         if result.status == "refused":
             self._hold_extraction(result.reason or "refused")
         elif result.status == "ok" and self.extraction_hold is not None:
@@ -511,6 +524,26 @@ class Worker:
                     error=error,
                     attempts=attempts,
                     given_up_at=self.clock(),
+                    telegram_key=msg["telegram_key"],
+                    owner_handle=self.config.owner_telegram_handle,
+                ),
+            )
+
+        return build
+
+    def _refusal_alert(self, msg: dict, refusal: str) -> Callable[[str, int], OutboxMessage]:
+        """The one alert for a message the t6 API refused on its own."""
+
+        def build(error: str, attempts: int) -> OutboxMessage:
+            return OutboxMessage(
+                kind="outage_alert",
+                chat_id=self.config.ops_chat_id,
+                topic_id=self.config.ops_topic_id,
+                text=render_message_refusal(
+                    intake_url=intake_link(
+                        msg["chat_id"], self.config.intake_topic_id, msg["message_id"]
+                    ),
+                    refusal=refusal,
                     telegram_key=msg["telegram_key"],
                     owner_handle=self.config.owner_telegram_handle,
                 ),

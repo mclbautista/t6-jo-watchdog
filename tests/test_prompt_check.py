@@ -40,33 +40,33 @@ def classifier_for(*answers) -> tuple[T6LlmClassifier, FakeLlmClient]:
     return T6LlmClassifier(client, model_hint="deepseek-chat"), client
 
 
-def refused_result(refusal: str, *, hold: bool) -> ClassifyResult:
+def refused_result(refusal: str) -> ClassifyResult:
     return ClassifyResult(
         outcome="api_error",
         error=f"refused ({refusal})",
         requested_model="deepseek-chat",
         prompt_tag=PROMPT_TAG,
         refusal=refusal,
-        hold=hold,
     )
 
 
 class PromptGuardTests(unittest.TestCase):
     def test_the_prompt_and_schema_hold_no_example_code(self):
-        # A three-letter uppercase token (a code shape) may only appear as a JSON-style
-        # field word such as "JSON"; no example Project or department code is allowed.
-        allowed = {"JSON"}
+        # A three-letter uppercase token (a code shape) may only be "JSON".
         for name, text in (
             ("template", PROMPT_TEMPLATE),
             ("schema", str(Extraction.model_json_schema())),
         ):
-            tokens = set(re.findall(r"\b[A-Z]{3}\b", text)) - allowed
+            tokens = set(re.findall(r"\b[A-Z]{3}\b", text)) - {"JSON"}
             self.assertEqual(tokens, set(), name)
 
-    def test_the_project_line_uses_shapes_not_examples(self):
+    def test_the_header_example_line_uses_only_shapes(self):
         (line,) = [x for x in PROMPT_TEMPLATE.splitlines() if x.startswith("- project_raw")]
-        self.assertIn("<CODE>", line)
-        self.assertNotIn("e.g.", line)
+        quoted = re.findall(r'"([^"]*)"', line)
+        self.assertTrue(quoted)
+        for example in quoted:
+            self.assertRegex(example, r"<[^<>]+>", example)  # every example holds a <...> shape
+            self.assertIsNone(re.search(r"[A-Za-z0-9]", re.sub(r"<[^<>]+>|JO #", "", example)))
 
 
 class CheckPromptTests(unittest.IsolatedAsyncioTestCase):
@@ -111,21 +111,12 @@ class CheckPromptTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RefusedExtractionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_a_refusal_by_rule_is_not_an_outage_outcome(self):
-        cases = [
-            (TEMPLATE_REFUSAL, True),
-            (SCHEMA_REFUSAL, True),
-            (Refused(rule="policy", reason="Provider does not meet retention policy"), True),
-            (INPUT_REFUSAL, False),  # this message alone
-            (Refused(rule="size", reason="LLM request exceeds the size limit"), False),
-            (Refused(rule="allow", reason="not allowed"), False),
-        ]
-        for refusal, hold in cases:
-            with self.subTest(refusal.rule + refusal.reason):
-                classifier, client = classifier_for(refusal)
+    async def test_a_refusal_by_rule_carries_rule_and_reason_and_is_not_retried_as_outage(self):
+        for rule in ("masking", "template", "schema", "policy", "allow", "size"):
+            with self.subTest(rule):
+                classifier, client = classifier_for(Refused(rule=rule, reason="why"))
                 result = await classifier.classify("x", None)
-                self.assertEqual(result.refusal, f"{refusal.rule}: {refusal.reason}")
-                self.assertEqual(result.hold, hold)
+                self.assertEqual(result.refusal, f"{rule}: why")
                 self.assertIsNone(result.extraction)
                 self.assertEqual(len(client.requests), 1)
 
@@ -137,14 +128,23 @@ class RefusedExtractionTests(unittest.IsolatedAsyncioTestCase):
                 classifier, _ = classifier_for(refusal)
                 self.assertIsNone((await classifier.classify("x", None)).refusal)
 
+    async def test_a_dry_run_ignored_by_an_older_api_is_unsupported_not_ok(self):
+        real = Done(result={"output": None, "output_valid": True, "tokens": {}})  # no dry_run
+        classifier, _ = classifier_for(real)
+        self.assertEqual((await classifier.check_prompt()).status, "unsupported")
+
 
 def jo(update_id=1, message_id=42, text="Task: edit"):
     return update(update_id, message_id=message_id, text=text)
 
 
+REFUSED = PromptCheck(status="refused", reason="masking: in the output schema")
+OK = PromptCheck(status="ok")
+
+
 class ExtractionHoldTests(unittest.IsolatedAsyncioTestCase):
-    async def test_a_refused_prompt_holds_extraction_with_one_alert_and_no_attempt(self):
-        classifier = FakeClassifier(refused_result("masking: in the prompt template", hold=True))
+    async def test_a_real_refusal_and_a_refused_dry_run_hold_with_one_alert_and_no_attempt(self):
+        classifier = FakeClassifier(refused_result("template: why"), checks=(REFUSED,))
         p = Pipeline(self, [jo(1, 42), jo(2, 43)], classifier=classifier)
         for _ in range(3):
             await p.worker.run_once()
@@ -154,14 +154,24 @@ class ExtractionHoldTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (row["state"], row["attempts"], row["exhausted_at"]), ("received", 0, None)
         )
-        (alert,) = p.outbox("outage_alert")
-        self.assertIn("masking: in the prompt template", alert["text"])
+        (alert,) = p.outbox("outage_alert")  # once, although two messages were held
+        self.assertIn("masking: in the output schema", alert["text"])
         self.assertIn("Extraction is on hold", alert["text"])
 
+    async def test_every_refusing_rule_holds_when_the_dry_run_is_refused(self):
+        for rule in ("masking", "template", "schema", "policy", "allow", "size"):
+            with self.subTest(rule):
+                classifier = FakeClassifier(
+                    refused_result(f"{rule}: why"),
+                    checks=(PromptCheck(status="refused", reason=f"{rule}: why"),),
+                )
+                p = Pipeline(self, [jo()], classifier=classifier)
+                await p.worker.run_once()
+                self.assertEqual(p.worker.extraction_hold, f"{rule}: why")
+                self.assertEqual(p.message()["attempts"], 0)
+
     async def test_the_start_check_holds_before_any_message_is_taken(self):
-        classifier = FakeClassifier(
-            checks=(PromptCheck(status="refused", reason="masking: in the output schema"),)
-        )
+        classifier = FakeClassifier(checks=(REFUSED,))
         p = Pipeline(self, [jo()], classifier=classifier)
         await p.worker.check_prompt()
         await p.worker.run_once()
@@ -172,9 +182,7 @@ class ExtractionHoldTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("masking: in the output schema", alert["text"])
 
     async def test_the_check_re_runs_every_15_minutes_and_a_pass_releases_the_hold(self):
-        refused = PromptCheck(status="refused", reason="schema: bad")
-        checks = (refused, refused, PromptCheck(status="ok"))
-        classifier = FakeClassifier(ok_result(), checks=checks)
+        classifier = FakeClassifier(ok_result(), checks=(REFUSED, REFUSED, OK))
         p = Pipeline(self, [jo()], classifier=classifier)
         await p.worker.check_prompt()
         self.assertEqual(classifier.check_calls, 1)
@@ -203,11 +211,20 @@ class ExtractionHoldTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(classifier.calls), 1)
         self.assertEqual(p.outbox("outage_alert"), [])
 
+    async def test_an_api_that_ignores_dry_run_does_not_hold(self):
+        classifier = FakeClassifier(checks=(PromptCheck(status="unsupported"),))
+        p = Pipeline(self, [jo()], classifier=classifier)
+        await p.worker.check_prompt()
+        await p.worker.run_once()
+
+        self.assertIsNone(p.worker.extraction_hold)
+        self.assertEqual(len(classifier.calls), 1)
+
 
 class MessageRefusalTests(unittest.IsolatedAsyncioTestCase):
-    async def test_a_refusal_of_one_message_is_given_up_at_once_with_one_alert(self):
+    async def test_a_refusal_with_an_ok_dry_run_gives_the_message_up_without_a_hold(self):
         refusal = "masking: Unresolved registered names in the masked input"
-        classifier = FakeClassifier(refused_result(refusal, hold=False))
+        classifier = FakeClassifier(refused_result(refusal), checks=(OK,))
         p = Pipeline(self, [jo()], classifier=classifier)
         await p.worker.run_once()
         p.clock.advance(seconds=3600)
@@ -217,10 +234,28 @@ class MessageRefusalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((row["state"], row["attempts"]), ("received", 1))
         self.assertIsNotNone(row["exhausted_at"])
         self.assertEqual(len(classifier.calls), 1)  # never retried
+        self.assertEqual(classifier.check_calls, 1)  # no re-check: nothing is held
         self.assertIsNone(p.worker.extraction_hold)
         (alert,) = p.outbox("outage_alert")
-        self.assertIn(refusal, alert["text"])
+        self.assertIn(f"Extraction refused by the t6 API ({refusal})", alert["text"])
+        self.assertIn("message given up", alert["text"])
+        self.assertNotIn("attempts", alert["text"])
         self.assertNotIn("Task: edit", alert["text"])
+
+    async def test_a_refusal_when_the_dry_run_cannot_say_is_retried_as_an_api_error(self):
+        for status in ("unavailable", "unsupported"):
+            with self.subTest(status):
+                classifier = FakeClassifier(
+                    refused_result("masking: why"), checks=(PromptCheck(status=status),)
+                )
+                p = Pipeline(self, [jo()], classifier=classifier)
+                await p.worker.run_once()
+
+                row = p.message()
+                self.assertIsNone(row["exhausted_at"])
+                self.assertIsNotNone(row["next_attempt_at"])  # the normal schedule
+                self.assertIsNone(p.worker.extraction_hold)
+                self.assertEqual(p.outbox("outage_alert"), [])
 
 
 if __name__ == "__main__":

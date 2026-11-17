@@ -337,6 +337,23 @@ def render_outage_alert(
     return "\n".join(lines)
 
 
+def render_message_refusal(
+    *, intake_url: str, refusal: str, telegram_key: str, owner_handle: str | None
+) -> str:
+    """The one alert for a message the t6 API refused on its own (#159)."""
+    lines = [
+        f"🔴 Extraction refused by the t6 API ({_field(refusal)}); message given up",
+        "Message still queued, not lost",
+        "",
+        f"Telegram message: {_link('link', intake_url)}",
+        f"Run <code>retry {_field(telegram_key)}</code> after the fix",
+    ]
+    mention = handle_mention(owner_handle)
+    if mention:
+        lines += ["", mention]
+    return "\n".join(lines)
+
+
 def render_extraction_hold(*, refusal: str, owner_handle: str | None) -> str:
     """The one alert when the t6 API refuses the extraction prompt itself (#159).
 

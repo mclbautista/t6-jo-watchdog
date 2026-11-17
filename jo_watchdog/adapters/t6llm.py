@@ -17,6 +17,7 @@ runs the same request with ``dry_run`` so a refused prompt is found before any m
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any
 
@@ -34,14 +35,13 @@ from jo_watchdog.core.extraction import (
 )
 from jo_watchdog.core.safe_error import describe_validation_error
 
+log = logging.getLogger(__name__)
+
 TASK_NAME = "jo_watchdog_extract"
 # Harmless fixed text for the start check: no names, nothing from a message.
 CHECK_TEXT = "Please upload the file."
 # Rules that refuse the request itself; the same request is refused again.
 _NON_RETRYABLE_RULES = frozenset({"masking", "template", "schema", "policy", "allow", "size"})
-# Of those, the ones that hit the prompt, schema or provider, so every message is refused.
-# A masking refusal names its part in the reason; "input" is the one message's text.
-_PROMPT_WIDE_RULES = frozenset({"template", "schema", "policy"})
 # Slack on top of the client's own socket timeout for the thread to come back.
 WAIT_MARGIN_SECONDS = 5.0
 
@@ -80,6 +80,7 @@ class T6LlmClassifier:
         self._client = client
         self._model_hint = model_hint
         self._wait = timeout_seconds + WAIT_MARGIN_SECONDS
+        self._warned_no_dry_run = False
 
     def _request(
         self, text: str, origin_lines: list[str] | None, *, dry_run: bool = False
@@ -111,7 +112,13 @@ class T6LlmClassifier:
             if reason:
                 return PromptCheck(status="refused", reason=reason)
         elif isinstance(outcome, Done):
-            return PromptCheck(status="ok")
+            if outcome.result.get("dry_run") is True:
+                return PromptCheck(status="ok")
+            # An older API ignores the unknown field and made a real call.
+            if not self._warned_no_dry_run:
+                self._warned_no_dry_run = True
+                log.warning("the t6 API ignored dry_run; the prompt check is unsupported")
+            return PromptCheck(status="unsupported")
         return PromptCheck(status="unavailable")
 
     def _result(self, outcome: ClassifierOutcome, started: float, **fields) -> ClassifyResult:
@@ -147,14 +154,12 @@ class T6LlmClassifier:
         if isinstance(outcome, Refused):
             refusal = _refusal(outcome)
             if refusal:
-                # Not an outage: the ledger must not retry it. The worker holds or gives up.
+                # Not an outage; the worker asks ``check_prompt`` whose fault it is.
                 return self._result(
                     "api_error",
                     started,
                     error=f"refused ({refusal})"[:500],
                     refusal=refusal,
-                    hold=outcome.rule in _PROMPT_WIDE_RULES
-                    or (outcome.rule == "masking" and "input" not in outcome.reason),
                 )
             failure = _FAILURES.get(outcome.failure or "", "api_error")
             return self._result(
