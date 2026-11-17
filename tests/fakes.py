@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from t6.verbs import Done, Refused
 
-from jo_watchdog.adapters.protocols import ClassifyResult, IncomingUpdate, PageRef
+from jo_watchdog.adapters.protocols import ClassifyResult, IncomingUpdate, PageRef, PromptCheck
 from jo_watchdog.adapters.t6api import ApiUnreachable, T6ApiError
 from jo_watchdog.app.caches import person_from_page, project_from_page
 from jo_watchdog.core.extraction import EXTRACTED_FIELDS, PROMPT_TAG, Extraction
@@ -78,9 +78,15 @@ def failed_result(outcome: str = "timeout") -> ClassifyResult:
 class FakeClassifier:
     """Returns scripted results in order (the last one repeats); records inputs."""
 
-    def __init__(self, *results: ClassifyResult):
+    def __init__(self, *results: ClassifyResult, checks: tuple[PromptCheck, ...] = ()):
         self.results = list(results) or [ok_result()]
         self.calls: list[tuple[str, list[str] | None]] = []
+        self.checks = list(checks) or [PromptCheck(status="ok")]  # the last repeats
+        self.check_calls = 0
+
+    async def check_prompt(self) -> PromptCheck:
+        self.check_calls += 1
+        return self.checks.pop(0) if len(self.checks) > 1 else self.checks[0]
 
     async def classify(self, text, origin_lines=None) -> ClassifyResult:
         self.calls.append((text, origin_lines))

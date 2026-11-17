@@ -106,7 +106,7 @@ One row per model call, successful or not.
 | purpose         | TEXT    | NOT NULL; `classify_extract` or `deliverable_match`    |
 | requested_model | TEXT    | NOT NULL; the configured alias (unpinned)              |
 | returned_model  | TEXT    | the model id the provider reported                     |
-| prompt_tag      | TEXT    | NOT NULL; e.g. `extract-v2`                            |
+| prompt_tag      | TEXT    | NOT NULL; e.g. `extract-v3`                            |
 | masker_version  | TEXT    | NOT NULL; `t6-api` (the API masks model inputs)        |
 | input_tokens    | INTEGER |                                                        |
 | output_tokens   | INTEGER |                                                        |

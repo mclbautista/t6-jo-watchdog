@@ -27,6 +27,7 @@ from jo_watchdog.adapters.protocols import (
     GatewayRef,
     JobOrderApi,
     PageRef,
+    PromptCheck,
     TelegramClient,
 )
 from jo_watchdog.adapters.t6api import ApiUnreachable, KeyAlreadyHeld, raise_input
@@ -70,9 +71,11 @@ from jo_watchdog.core.report import (
     render_capture_report,
     render_dry_run_plan,
     render_edit_after_capture,
+    render_extraction_hold,
     render_heartbeat,
     render_heartbeat_failed_alert,
     render_message_gap,
+    render_message_refusal,
     render_outage_alert,
     render_stale_cache,
 )
@@ -97,6 +100,8 @@ STUCK_AFTER = timedelta(hours=1)
 # A failed reaction is retried inline after these delays, then counted.
 REACTION_RETRY_SECONDS = (2, 5)
 DEADMAN_CHECK_SECONDS = 30.0
+# While extraction is on hold (the API refused the prompt), the start check re-runs this often.
+PROMPT_RECHECK = timedelta(minutes=15)
 
 # The extraction input is masked by the t6 API (``llm run``), not by the watchdog.
 
@@ -205,6 +210,8 @@ class Worker:
         self.sleep = sleep
         self.deadman_interval = deadman_interval
         self.stuck_warned: set[int] = set()  # outbox rows already warned about as stuck
+        self.extraction_hold: str | None = None  # "rule: reason" while the prompt is refused
+        self._recheck_at: datetime | None = None
 
     # -- scope -------------------------------------------------------------
 
@@ -354,7 +361,8 @@ class Worker:
             due += self.ledger.due(State.PLANNED, stamp)
         due += self.ledger.due(State.WRITING, stamp, settle_before=settle)
         due += self.ledger.due(State.WRITTEN, stamp)
-        due += self.ledger.due(State.RECEIVED, stamp)
+        if self.extraction_hold is None:
+            due += self.ledger.due(State.RECEIVED, stamp)
         due += self.ledger.due(State.EXTRACTED, stamp)
         for key in due:
             await self.process(key)
@@ -403,8 +411,19 @@ class Worker:
         raw_message = json.loads(msg["raw_source"]).get("message") or {}
         if await self._filtered_out(msg, raw_message):
             return State.IGNORED
+        if self.extraction_hold is not None:
+            return State.RECEIVED
         result = await self.classifier.classify(msg["text"], forward_origin_lines(raw_message))
-        trace = result.model_dump(exclude={"extraction", "retry_after"})
+        give_up = False
+        if result.refusal:
+            # The dry run is the only authority: the prompt is refused (hold, no attempt spent),
+            # or this message is (give it up), or nobody can say (retry as an api_error).
+            check = await self._run_check()
+            if check.status == "refused":
+                self._hold_extraction(check.reason or result.refusal)
+                return State.RECEIVED
+            give_up = check.status == "ok"
+        trace = result.model_dump(exclude={"extraction", "retry_after", "refusal"})
         call = {
             "provider": "deepseek",
             "purpose": "classify_extract",
@@ -416,10 +435,15 @@ class Worker:
             failure = self.ledger.record_classifier_failure(
                 key,
                 call=call,
-                schedule=self.config.retry_schedule_seconds,
+                # A refusal of this message alone is never retried: given up at once, one alert.
+                schedule=() if give_up else self.config.retry_schedule_seconds,
                 now=self.clock(),
                 retry_after=result.retry_after,
-                on_exhausted=self._outage_alert(msg, CLASSIFICATION),
+                on_exhausted=(
+                    self._refusal_alert(msg, result.refusal or "")
+                    if give_up
+                    else self._outage_alert(msg, CLASSIFICATION)
+                ),
             )
             if failure.exhausted:
                 log.error("classifier %s for %s; retries exhausted", result.outcome, key)
@@ -441,6 +465,42 @@ class Worker:
             | {"masker_version": MASKED_BY},
         }
         return self.ledger.record_extraction(key, call=call, result=stage_result)
+
+    # -- extraction hold (#159) -----------------------------------------------
+
+    def _hold_extraction(self, refusal: str) -> None:
+        """Stop taking messages through extraction; report the refusal once per hold."""
+        self._recheck_at = self.clock() + PROMPT_RECHECK
+        if self.extraction_hold is not None:
+            return
+        self.extraction_hold = refusal
+        self.ledger.enqueue_system(
+            OutboxMessage(
+                kind="outage_alert",
+                chat_id=self.config.ops_chat_id,
+                topic_id=self.config.ops_topic_id,
+                text=render_extraction_hold(
+                    refusal=refusal, owner_handle=self.config.owner_telegram_handle
+                ),
+            )
+        )
+        log.error("extraction on hold, the API refused the prompt: %s", refusal)
+
+    async def _run_check(self) -> PromptCheck:
+        check = getattr(self.classifier, "check_prompt", None)
+        return await check() if check else PromptCheck(status="unavailable")
+
+    async def check_prompt(self) -> None:
+        """The start check, and its re-run while held: a refusal holds extraction, an answer
+        that is ok releases it, anything else (no answer, an API without dry_run) changes
+        nothing."""
+        result = await self._run_check()
+        if result.status == "refused":
+            self._hold_extraction(result.reason or "refused")
+        elif result.status == "ok" and self.extraction_hold is not None:
+            log.info("extraction prompt accepted again; extraction resumes")
+            self.extraction_hold = None
+            self._recheck_at = None
 
     async def process(self, key: str) -> None:
         try:
@@ -464,6 +524,26 @@ class Worker:
                     error=error,
                     attempts=attempts,
                     given_up_at=self.clock(),
+                    telegram_key=msg["telegram_key"],
+                    owner_handle=self.config.owner_telegram_handle,
+                ),
+            )
+
+        return build
+
+    def _refusal_alert(self, msg: dict, refusal: str) -> Callable[[str, int], OutboxMessage]:
+        """The one alert for a message the t6 API refused on its own."""
+
+        def build(error: str, attempts: int) -> OutboxMessage:
+            return OutboxMessage(
+                kind="outage_alert",
+                chat_id=self.config.ops_chat_id,
+                topic_id=self.config.ops_topic_id,
+                text=render_message_refusal(
+                    intake_url=intake_link(
+                        msg["chat_id"], self.config.intake_topic_id, msg["message_id"]
+                    ),
+                    refusal=refusal,
                     telegram_key=msg["telegram_key"],
                     owner_handle=self.config.owner_telegram_handle,
                 ),
@@ -1274,6 +1354,9 @@ class Worker:
     async def run_once(self) -> None:
         try:
             await self.refresh_caches()
+            if self._recheck_at is not None and self.clock() >= self._recheck_at:
+                self._recheck_at = self.clock() + PROMPT_RECHECK
+                await self.check_prompt()
             await self.poll_once()
             self._beat()
             await self.drain_once()
@@ -1303,6 +1386,8 @@ class Worker:
         If the poller stays stale for ``deadman_stale_minutes``, ``DeadmanExit``
         propagates so the process exits non-zero and the container restarts it.
         """
+        self._beat()
+        await self.check_prompt()
         self._beat()
         loop = asyncio.create_task(self._loop())
         deadman = asyncio.create_task(self._deadman())
