@@ -184,6 +184,16 @@ docker compose exec watchdog python -m jo_watchdog.app retry --all-exhausted --c
 
 `retry` clears the attempt count and never changes the stored plan.
 
+A refusal of an extraction call by rule (`masking`, `template`, `schema`, `policy`,
+`allow`, `size`) is not an outage and is not retried on that schedule. At start the
+watchdog runs the extraction prompt through `llm run` with `dry_run` (the real template,
+schema and few-shot turns, a fixed harmless text, no provider call). If the API refuses
+the prompt, schema or policy, extraction is held: messages stay `received` with no attempt
+spent, the ops topic gets one alert with the rule and the reason (the reason names the
+part, never a word), and the check re-runs every 15 minutes until it passes. An API that
+does not answer at start does not hold anything. A refusal of one message alone (its
+input, or its size) gives that message up at once with the usual alert, until `retry`.
+
 If the poller stops making progress for `deadman_stale_minutes` (10), the
 process exits non-zero so the restart policy brings it back. At `heartbeat_time`
 (07:00 `Asia/Manila`) the ops topic gets a heartbeat for the preceding 24 hours,

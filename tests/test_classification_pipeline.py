@@ -40,7 +40,7 @@ class VerdictTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["findings"], [])
         self.assertEqual(result["trace"]["returned_model"], "deepseek-chat-v9")
         self.assertEqual(result["trace"]["requested_model"], "deepseek-chat")
-        self.assertEqual(result["trace"]["prompt_tag"], "extract-v2")
+        self.assertEqual(result["trace"]["prompt_tag"], "extract-v3")
         self.assertEqual(result["trace"]["input_tokens"], 1200)
 
         (call,) = rows(ledger, "SELECT * FROM llm_calls")
@@ -136,7 +136,7 @@ class ModelInputTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(request.input_text.startswith("MFG - TOC - JO #74\nPW: hunter2\n\n---"))
         self.assertEqual(request.masking_preset, "names")  # names and credentials: the API's job
         (call,) = rows(ledger, "SELECT * FROM llm_calls")
-        self.assertEqual((call["outcome"], call["prompt_tag"]), ("ok", "extract-v2"))
+        self.assertEqual((call["outcome"], call["prompt_tag"]), ("ok", "extract-v3"))
         self.assertEqual((call["input_tokens"], call["output_tokens"]), (6180, 214))
 
 

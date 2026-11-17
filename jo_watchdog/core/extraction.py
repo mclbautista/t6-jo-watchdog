@@ -19,7 +19,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, field_validator
 
 # Changing the prompt text or the few-shot list means a new tag.
-PROMPT_TAG = "extract-v2"
+PROMPT_TAG = "extract-v3"
 FEWSHOT_PATH = Path(__file__).resolve().parent.parent / "prompts" / f"{PROMPT_TAG}.fewshot.json"
 
 Verdict = Literal["jo", "unsure", "not_jo"]
@@ -174,11 +174,11 @@ questions; "unsure" when it might be a job order but you cannot tell.
 order. When true, extract the fields of the first one only.
 - header_raw: the first non-empty line, exactly as written.
 - project_raw, department_raw, jo_number_raw: the project code, department code and number \
-part of the JO header as written (e.g. "MFG", "TOC", "JO #74"), or null.
+part of the JO header as written (shapes: "<CODE>", "<DEPARTMENT CODE>", "JO #<number>"), or null.
 - header_date_raw: the date line under the header as written, without a "Date:" label.
 - title, task, purpose, source, watermark, link_settings, mode_of_transfer, platform, blocker, \
 pending, notes, deadline_raw, assignees_raw, cc_raw: the value written after the matching \
-label, copied verbatim (keep hedges such as "if keri" and multi-line lists). "Source", \
+label, copied verbatim (keep hedges such as "if approved" and multi-line lists). "Source", \
 "Source Drive" and "Source Material" all go to source. "Assigned" goes to assignees_raw. \
 Unlabeled lines after a label belong to that label.
 - subtitle: "Burned-in: <language>" only when the message says subtitles are burned in and \

@@ -337,6 +337,23 @@ def render_outage_alert(
     return "\n".join(lines)
 
 
+def render_extraction_hold(*, refusal: str, owner_handle: str | None) -> str:
+    """The one alert when the t6 API refuses the extraction prompt itself (#159).
+
+    ``refusal`` is the API's ``rule: reason``; the reason names the part, never a word.
+    """
+    lines = [
+        "🔴 Extraction is on hold: the t6 API refused the extraction prompt",
+        "Messages stay received, not lost; the check re-runs every 15 minutes",
+        "",
+        f"Refusal: {_field(refusal)}",
+    ]
+    mention = handle_mention(owner_handle)
+    if mention:
+        lines += ["", mention]
+    return "\n".join(lines)
+
+
 def render_heartbeat_failed_alert(
     *,
     window_start: datetime,
