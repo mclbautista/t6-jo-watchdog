@@ -125,7 +125,7 @@ For each candidate: `link` if `p_match` is the highest of the three and `p_match
 ### Configuration and secrets
 
 - `.env`: `OPENROUTER_API_KEY`.
-- `config.yaml`: `deliverables_data_source_id` (`0a4ff084-3138-429c-8dbe-4d802aded74f`), `jev_url` (`https://openrouter.ai/api/alpha/decisions`), `jev_model` (`~typesafe/jev-latest`), `jev_timeout_seconds` (30), `t_link` (0.90), `t_hint` (0.50), `deliverable_link_enabled` (false).
+- `config.yaml`: `deliverables_data_source_id` (`00000000-0000-0000-0000-000000000004`), `jev_url` (`https://openrouter.ai/api/alpha/decisions`), `jev_model` (`~typesafe/jev-latest`), `jev_timeout_seconds` (30), `t_link` (0.90), `t_hint` (0.50), `deliverable_link_enabled` (false).
 
 ## Blocked by
 

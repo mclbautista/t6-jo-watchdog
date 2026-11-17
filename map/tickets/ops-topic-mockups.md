@@ -41,7 +41,7 @@ Locked with the owner 2026-09-28. Format rule applied throughout: default to lin
 > [Notion row](https://notion.so/…)
 > [Telegram message](https://t.me/c/…)
 >
-> @priya
+> @example_handle
 
 ### 3. Duplicate / reused number
 *(not in the tag-Priya list — no tag, consistent with the settled rule)*

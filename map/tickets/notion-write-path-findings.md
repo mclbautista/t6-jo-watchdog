@@ -15,7 +15,7 @@ Researched 2026-09-28 for the ticket "Notion write path for Job Orders". Facts o
 
 ## 2. Creating a row in Job Orders
 
-- **[documented]** `POST /v1/pages` with `parent: { data_source_id }`; property keys must match the data source schema by name or id. Job Orders data source id (from the database fetch in this session): `3d8fb4d5-9e59-8073-a0d0-000b77632947`. Source: post-page.
+- **[documented]** `POST /v1/pages` with `parent: { data_source_id }`; property keys must match the data source schema by name or id. Job Orders data source id (from the database fetch in this session): `00000000-0000-0000-0000-000000000003`. Source: post-page.
 - **[documented]** Value shapes: title and rich_text are arrays of text objects; select and status can be set by `name` or `id`; date is `{ start, end, time_zone }`; relation is an array of `{ id }` page ids, at most 100 per request. Sources: post-page (OpenAPI section) and https://developers.notion.com/reference/page-property-values
 - **[documented]** Formula, rollup, id, created and last-edited values are set by Notion and must be left out of writes. In Job Orders, Health is a formula, so it is never written. Source: post-page.
 - **[documented]** Size limits: one text item holds at most 2000 characters; an array holds at most 100 items; a whole request holds at most 1000 blocks and 500 KB. Sources: post-page (OpenAPI) and https://developers.notion.com/reference/request-limits.md
@@ -27,7 +27,7 @@ Researched 2026-09-28 for the ticket "Notion write path for Job Orders". Facts o
 ## 3. Reading People and Projects for the cache; queries for dedupe
 
 - **[documented]** `POST /v1/data_sources/{id}/query` with optional `filter`, `sorts`, `page_size` (max 100) and `start_cursor`; follow `next_cursor` while `has_more` is true; `filter_properties` trims the response; one query returns at most 10,000 results. Sources: query-a-data-source and https://developers.notion.com/guides/data-apis/query-large-data-sources
-- Related data sources from the Job Orders schema: People `77b2a701-71db-4e88-a694-37f07303e77e` (Assigned, Coordinator, cc), Projects `cc1dc02a-8f32-4c97-81e4-dc1e08d7f134`, Deliverables `0a4ff084-3138-429c-8dbe-4d802aded74f`.
+- Related data sources from the Job Orders schema: People `00000000-0000-0000-0000-000000000001` (Assigned, Coordinator, cc), Projects `00000000-0000-0000-0000-000000000002`, Deliverables `00000000-0000-0000-0000-000000000004`.
 - **[documented]** Select and status options live in the data source schema, which the retrieve-a-data-source call returns. Source: https://developers.notion.com/reference/property-object
 - **[unverified]** How quickly a newly created row shows up in a query. The docs I read don't say, so a query-before-create duplicate check may not see a row written a moment ago.
 
