@@ -100,7 +100,7 @@ Principles: **Idempotent writes**, **Own your dedupe key**, **Annotate, don't ga
 
 ## 8. Person resolution: alias table lives in Notion, with a guarded fuzzy step
 
-**If** a new hire or nickname needs to be usable without a code deploy, **then** the alias/shift table belongs where the coordinator already works (Contacts), not in a YAML file. Verified live against the Contacts data source (`collection://77b2a701-71db-4e88-a694-37f07303e77e`, fetched 2026-09-29):
+**If** a new hire or nickname needs to be usable without a code deploy, **then** the alias/shift table belongs where the coordinator already works (Contacts), not in a YAML file. Verified live against the Contacts data source (`collection://00000000-0000-0000-0000-000000000001`, fetched 2026-09-29):
 
 - `Aliases` — Text, comma-separated.
 - `End of Shift` — Select, 24 hourly options (`12:00 AM` … `11:00 PM`) + `Flexible / Variable`.

@@ -36,9 +36,9 @@ Resolve People, Projects, and Departments against live Notion data while preserv
 
 | Cache | Data source | Fields read |
 |---|---|---|
-| People | Contacts `77b2a701-71db-4e88-a694-37f07303e77e` | page id, `Name` (title), `TelegramUserID`, `TelegramHandle`, `Aliases`, `End of Shift` |
-| Projects | Projects `cc1dc02a-8f32-4c97-81e4-dc1e08d7f134` | page id, `Name`, `Project Code` (select) |
-| Departments | Job Orders `3d8fb4d5-9e59-8073-a0d0-000b77632947` schema | `Department` select options |
+| People | Contacts `00000000-0000-0000-0000-000000000001` | page id, `Name` (title), `TelegramUserID`, `TelegramHandle`, `Aliases`, `End of Shift` |
+| Projects | Projects `00000000-0000-0000-0000-000000000002` | page id, `Name`, `Project Code` (select) |
+| Departments | Job Orders `00000000-0000-0000-0000-000000000003` schema | `Department` select options |
 
 ### Mention extraction
 

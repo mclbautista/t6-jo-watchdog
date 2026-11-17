@@ -12,7 +12,7 @@ blocked_by: [Job Order field mapping into Notion, Resolving people and projects 
 The field-mapping ticket left the Deliverable relation blank in v1 and named matching an open gap and a goal. How does the watchdog link a captured JO to the Deliverable pages it belongs to, without inventing links?
 
 Facts from the live Notion data (fetched 2026-09-28):
-- Deliverables (`collection://0a4ff084-3138-429c-8dbe-4d802aded74f`) has 9 rows; 3 are dated Sept 2026, the rest 2024-2025. Names follow project + cut tag + purpose or week (`Moonglow FTR SCR`, `Mag-Iina FTR SCR`, `Show Hotel WK11 VFX`, `Mainpic DCP`).
+- Deliverables (`collection://00000000-0000-0000-0000-000000000004`) has 9 rows; 3 are dated Sept 2026, the rest 2024-2025. Names follow project + cut tag + purpose or week (`Moonglow FTR SCR`, `Mag-Iina FTR SCR`, `Show Hotel WK11 VFX`, `Mainpic DCP`).
 - Each Deliverable has a `🗺️ Projects` relation. Its `Job Orders` relation is the two-way counterpart of the JO's `Deliverable` relation, so writing from the JO side is enough.
 - Status is a lifecycle (Staged, Waiting for Lock, In Progress, Blocked, Waiting for Comments, Mastering, Delivered, QC, QC Passed, Distributed, Archived); Deliverable Class is Master or Archival.
 - `OCP Intake ID` and `OCP Intake Source` exist but are empty on all 9 rows, so they are not usable as keys.

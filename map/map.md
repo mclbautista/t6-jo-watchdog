@@ -12,7 +12,7 @@ The wider reason this matters: **Projects are built from Deliverables which are 
 
 ## Notes
 
-- Domain: post-production operations. Telegram forum-topic group in, Notion Job Orders database out (data source `collection://3d8fb4d5-9e59-8073-a0d0-000b77632947`). Volume is roughly 10-12 JO messages a day, so LLM cost and latency are not a constraint.
+- Domain: post-production operations. Telegram forum-topic group in, Notion Job Orders database out (data source `collection://00000000-0000-0000-0000-000000000003`). Volume is roughly 10-12 JO messages a day, so LLM cost and latency are not a constraint.
 - Standing principles (name them in every resolution so they transfer):
   - **Precision over recall when a human can fill the gap**: a wrong link costs more than a blank, so the matcher links only what it affirms and hints the rest.
   - **Scope at the filter, not the grant**: broad access is fine when every lookup is re-scoped (chat and topic id for messages, project id for Deliverable candidates).
@@ -57,7 +57,7 @@ The wider reason this matters: **Projects are built from Deliverables which are 
   - Assigned, Coordinator and cc are relations to a People data source; Projects is a relation to the Projects data source; Deliverable is a relation to a Deliverables data source. Relations need page ids, not names.
   - Text properties: JO Number, Title, Subtitle, Task, Purpose, Notes, Blocker, Source / Source Drive, Platform, Watermark, Link Settings, Mode of Transfer. Date properties: Date, Deadline. Title property: Name. Health is a read-only formula.
   - New text columns added by the owner on 2026-09-28: `Telegram Key` and `Pending` (verified). Poster is recorded in the page body, not a property.
-- Facts verified in the Contacts database (fetched 2026-09-29, `collection://77b2a701-71db-4e88-a694-37f07303e77e`):
+- Facts verified in the Contacts database (fetched 2026-09-29, `collection://00000000-0000-0000-0000-000000000001`):
   - `Aliases` — Text, comma-separated.
   - `End of Shift` — Select, 24 hourly options (`12:00 AM` through `11:00 PM`) plus `Flexible / Variable`.
   - `TelegramHandle`, `TelegramUserID` already existed as Text.

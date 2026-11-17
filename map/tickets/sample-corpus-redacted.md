@@ -20,7 +20,7 @@ Pending:
 Note: 
 
 Assigned: Lena 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -40,7 +40,7 @@ Pending:
 Note: 
 
 Assigned: Paul   
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -65,7 +65,7 @@ Locpath:
 
 Deadline: within shift 
 Assigned to: Paul / Ramon  
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -93,7 +93,7 @@ Locpath:
 Deadline: within shift if kaya
 Assigned to: ate Lena / Ramon, if abutin the next day
   
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -113,7 +113,7 @@ Pending:
 Note: 
 
 Assigned: ate Lena    
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -158,7 +158,7 @@ Notes: pa apply nalang here yung tinuro ni ate sam na pag sort
 
 Assigned: @user_one  thank you!
 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -185,7 +185,7 @@ DAY 3 - B006C011
 
 Assigned: @user_one  thank you!
 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -227,7 +227,7 @@ Pending:
 Note: Ideally done na ito by Sat night for pickup sa shoot next day
 
 Assigned: Ramon  
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -247,7 +247,7 @@ Pending:
 Note: Please send file sizes for proxies, needed for report.
 
 Assigned: Lena 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -267,7 +267,7 @@ Pending:
 Note:
 
 Assigned: Lena Mira 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -291,7 +291,7 @@ Locpath:
 
 Deadline: 
 Assigned to: Paul / Ramon 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -329,7 +329,7 @@ Locpath:
 
 Deadline: September 25, 3pm
 Assigned to: Paul / Ramon     
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -354,7 +354,7 @@ Locpath:
 
 Deadline:  end of shift 
 Assigned to: ate @user_three         
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -415,7 +415,7 @@ Pending:
 Note: 
 
 Assigned: Paul / Ramon  
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -438,7 +438,7 @@ Note:
 
 Assigned: for @user_one  thank youuu
 
-cc:  @priya
+cc:  @example_handle
 ```
 
 ```
@@ -486,7 +486,7 @@ Pending:
 Note:
 
 assigned to: Ramon    
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -507,7 +507,7 @@ Source Material:
 Note: 
 
 Assigned: Paul, Ramon / Mira, Lena  
-cc @priya
+cc @example_handle
 ```
 
 ```
@@ -530,7 +530,7 @@ Notes:
 
 Assigned: ate @user_three thank you!
 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -547,7 +547,7 @@ Status:
 Pending:
 
 Assigned: @user_five 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -571,7 +571,7 @@ Status as of 7pm:
 Pending:
 
 Assigned: @user_two tyvmmmm
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -594,7 +594,7 @@ Note:
 
 Assigned: for @user_one  thank youuu
 
-cc:  @priya
+cc:  @example_handle
 ```
 
 ```
@@ -660,7 +660,7 @@ Locpath:
 
 Deadline:  1pm
 Assigned to: Ramon     
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -686,7 +686,7 @@ Status:
 Notes:
 
 assigned to: Mira 
-cc: @priya @user_five
+cc: @example_handle @user_five
 ```
 
 ```
@@ -712,7 +712,7 @@ Note:
 — after nalang po mag-sync ni Ate Nina later 
 
 assigned to: Ramon @user_two // @user_three 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -736,7 +736,7 @@ Pending:
 Note:
 
 assigned to: @user_three 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -766,7 +766,7 @@ Note:
 LSB OFFICIAL VFX TRACKER 
 
 assigned to: @user_three  
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -829,7 +829,7 @@ Notes:
 
 
 assigned to:  Ramon @user_two Mira Lena 
-cc: @priya @user_five
+cc: @example_handle @user_five
 ```
 
 ```
@@ -852,7 +852,7 @@ Note: wk12 d5 abangan & wk 13 days 1-4 abangan
 
 Assigned: for @user_two thank youuu
 
-cc: ate @user_six @priya
+cc: ate @user_six @example_handle
 ```
 
 ```
@@ -876,7 +876,7 @@ Note:
 
 Assigned: for @user_one  thank youuu
 
-cc:  @priya
+cc:  @example_handle
 ```
 
 ```
@@ -899,7 +899,7 @@ Locpath:
 
 Deadline:
 Assigned to: Ramon / Lena 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -923,7 +923,7 @@ Locpath:
 
 Deadline: September 18 / 7pm
 Assigned to: @user_one     
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -943,7 +943,7 @@ Pending:
 Note:
 
 Assigned: @user_three  @user_one 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -973,7 +973,7 @@ For Music Guide:
 Watermarkless copy of the no-music file — for Sonny
 
 Assigned: @user_three @user_one 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -996,7 +996,7 @@ Notes:
 
 Assigned: ate Lena thank youu! 
 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1019,7 +1019,7 @@ Note: wk11 days 3 and 4 vfx for postgrading
 
 Assigned: for @user_two thank youuu
 
-cc: ate @user_six @priya
+cc: ate @user_six @example_handle
 ```
 
 ```
@@ -1045,7 +1045,7 @@ Locpath:
 
 Deadline: September 11, pm
 Assigned to: Mira   
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1064,7 +1064,7 @@ Pending:
 Note:
 
 Assigned: Mira
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1088,7 +1088,7 @@ Locpath: '/Volumes/MAG-IINA ONLINE 01/MAG IINA ONLINE/02_EXPORTS /FULL FILM/H264
 
 Deadline: Sep 10 / Thu
 Assigned to: Mira Lena 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1112,7 +1112,7 @@ Locpath:
 
 Deadline: September 10, asap
 Assigned to: @user_one   
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1141,7 +1141,7 @@ Locpath:
 
 Deadline: Sep 8 / Tue
 Assigned to: @user_one 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1167,7 +1167,7 @@ Pending:
 
 Assigned: Mira / @user_two 
 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1186,7 +1186,7 @@ Pending:
 Note: Paki-report ang total proxy file size for DPR. New framing chart sa Day 4, parang sa Cam C lang siya need, pero still Alexa35 cube LUTs. May nabanggit si Justin na may incomplete proxies ang Day 4 pacheck nalang.
 
 Assigned: Ramon but maybe Lena 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1210,7 +1210,7 @@ Locpath:
 
 Deadline: September 9 / 7pm
 Assigned to: Ramon  
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1235,7 +1235,7 @@ Status as of 7pm:
 Pending:
 Notes:
 
-assigned to ate Nina  cc @priya
+assigned to ate Nina  cc @example_handle
 ```
 
 ```
@@ -1278,7 +1278,7 @@ Locpath:
 
 Deadline: Sep 3 / Thu
 Assigned to: Ramon @user_two      
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1307,7 +1307,7 @@ Locpath:
 
 Deadline: September 2, within shift 
 Assigned to:  ate @user_four / Ramon 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1328,7 +1328,7 @@ Source Material: HADR Archive
 Note: 
 
 Assigned: Ramon 
-cc @priya
+cc @example_handle
 ```
 
 ```
@@ -1349,7 +1349,7 @@ Source Material: HADR Archive
 Note: hingi nalang rin po ako ng locpath after. Ipapacopy ko sa drives ng riles sa Monday po
 
 Assigned: ate Lena 
-cc @priya
+cc @example_handle
 ```
 
 ```
@@ -1394,7 +1394,7 @@ Locpath:
 
 Deadline: August 27 / Thurs / before photoshoot
 Assigned to: @user_one  
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1418,7 +1418,7 @@ Locpath:
 
 Deadline: kung kelan matapos yung render
 Assigned to: Ramon / Mira 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1442,7 +1442,7 @@ Locpath:
 
 Deadline: Aug 26, end of shift
 Assigned to: @user_one 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1466,7 +1466,7 @@ Locpath:
 
 Deadline: Aug 26, end of shift
 Assigned to: @user_one 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1540,7 +1540,7 @@ Pending:
 
 Assigned: Mira / @user_two kung sakaling umabot kay user_two
 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1569,7 +1569,7 @@ Pending:
 
 Assigned: Mira / @user_two kung sakaling umabot kay user_two
 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1590,7 +1590,7 @@ Pending:
 Instructions:
 
 Assigned: Mira 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1623,7 +1623,7 @@ Instructions:
 3. Apply required watermark upon export.
 
 Assigned: Mira 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1668,7 +1668,7 @@ Notes:
 
 Assigned: ate Nina thank u! 
 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1692,7 +1692,7 @@ Notes:
 
 Assigned: ate Nina thank you!
 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1729,7 +1729,7 @@ Notes:
 
 Assigned: ate Nina thank you!
 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1754,7 +1754,7 @@ Locpath:
 
 Deadline: Aug 17, 1pm  
 Assigned to: Ramon   
-cc: @priya, @user_seven
+cc: @example_handle, @user_seven
 ```
 
 ```
@@ -1779,7 +1779,7 @@ Pending:
 
 Assigned: for @user_two / Ramon kung sino man ang walang gawaa thank you!
 
-cc: @priya
+cc: @example_handle
 ```
 
 ```
@@ -1821,7 +1821,7 @@ Status as of 7pm:
 Pending:
 Notes: 
 
-Assigned to @user_one cc @priya
+Assigned to @user_one cc @example_handle
 ```
 
 ```
@@ -1847,5 +1847,5 @@ Locpath:
 
 Deadline: Aug 15, 5pm
 Assigned to: ate Nina   
-cc: @priya
+cc: @example_handle
 ```
