@@ -408,6 +408,24 @@ class EditTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://www.notion.so/page1", post)
         self.assertEqual(h.ledger.last_committed_offset(), 2)
 
+    async def test_the_edit_report_tags_the_standing_cc_when_configured(self):
+        h = Harness(self)
+        h.worker.config = make_config(standing_cc_telegram_handle="standing_cc")
+        await h.feed(message_update(1, 10, "JO 5\nTask: original"))
+        await h.feed(edit_update(2, 10, "JO 5\nTask: changed"))
+        post = h.posts()[-1]
+        self.assertTrue(post.startswith("✏️ Edited after capture, row not updated"))
+        self.assertTrue(post.endswith("\n\n@standing_cc"))
+
+    async def test_the_edit_report_tags_nobody_without_a_standing_cc(self):
+        h = Harness(self)
+        h.worker.config = make_config(standing_cc_telegram_handle=None)
+        await h.feed(message_update(1, 10, "JO 5\nTask: original"))
+        await h.feed(edit_update(2, 10, "JO 5\nTask: changed"))
+        post = h.posts()[-1]
+        self.assertTrue(post.startswith("✏️ Edited after capture, row not updated"))
+        self.assertNotIn("@", post)
+
     async def test_edit_while_in_pipeline_is_reported_once_after_capture(self):
         h = Harness(self)
         h.telegram.updates = [

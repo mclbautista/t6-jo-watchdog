@@ -27,6 +27,12 @@ _COURTESY_TAIL_RE = re.compile(
     r"(?:[\s,!.]+|^)(?:thank\w*|ty(?:vm+)?|you+\w*|u|po)[\s,!.]*$", re.IGNORECASE
 )
 _HANDLE_RE = re.compile(r"@([A-Za-z0-9_]{3,})")
+# The honorifics of `t6.lookup.normalize.DEFAULT_HONORIFICS`, kept here so this module stays pure (#103).
+_HONORIFICS = (
+    "ate|kuya|sir|maam|mam|madam|mr|mrs|ms|miss|atty|engr|direk|dir|tito|tita"
+)
+# Leading honorifics, only when a name or @handle follows: a lone `ate` is kept as written.
+_LEADING_HONORIFIC_RE = re.compile(rf"^(?:(?:{_HONORIFICS})\.?\s+)+(?=\S)", re.IGNORECASE)
 
 
 # -- snapshot models ---------------------------------------------------------
@@ -110,8 +116,9 @@ def _fold(text: str) -> str:
 
 
 def _strip_courtesy(segment: str) -> str:
-    """Drop a leading ``for`` and trailing thanks (``thank youuu``, ``tyvm``, ``po``)."""
+    """Drop a leading ``for``, leading honorifics (``ate Lena``) and trailing thanks (``thank youuu``, ``tyvm``, ``po``)."""
     text = _LEADING_FOR_RE.sub("", segment.strip())
+    text = _LEADING_HONORIFIC_RE.sub("", text)
     while True:
         m = _COURTESY_TAIL_RE.search(text)
         if not m or m.start() == m.end():

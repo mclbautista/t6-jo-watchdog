@@ -186,6 +186,16 @@ class SystemMessageTests(unittest.TestCase):
             '<a href="https://t">Telegram message</a>',
         )
 
+    def test_edit_after_capture_tags_the_standing_cc_only_when_configured(self):
+        tagged = render_edit_after_capture(
+            name="A - B - JO #1", page_url=ROW, intake_url="https://t", standing_cc_handle="@standing_cc"
+        )
+        self.assertTrue(tagged.endswith('<a href="https://t">Telegram message</a>\n\n@standing_cc'))
+        for blank in (None, "", "  ", "@"):
+            self.assertNotIn("@", render_edit_after_capture(
+                name="A - B - JO #1", page_url=ROW, intake_url="https://t", standing_cc_handle=blank
+            ), blank)
+
     def test_stale_cache(self):
         refreshed = datetime(2026, 10, 20, 23, 0, tzinfo=UTC)  # Oct 21 07:00 Manila
         text = render_stale_cache(
