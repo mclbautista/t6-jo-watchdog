@@ -89,6 +89,7 @@ class Report:
         default_factory=lambda: {name: Counter(same=0, different=0, missing=0) for name in FIELDS}
     )
     differences: list[tuple[str, int]] = field(default_factory=list)
+    not_built_reasons: list[tuple[int, str, str | None]] = field(default_factory=list)
     has_standing_cc: bool = False
 
 
@@ -124,9 +125,16 @@ async def run_comparison(
         built_plan = None
         if stored_plan:
             try:
-                built_plan = await worker.build_plan(row)
-            except Exception:  # a refused preview is a row the new path cannot build
+                built_plan = await worker.build_plan(row, hold_unreachable=False)
+            except Exception as exc:  # a refused preview or unreachable API cannot build the row
+                cause = getattr(exc, "cause", exc)
+                report.not_built_reasons.append(
+                    (row["id"], type(cause).__name__, getattr(cause, "rule", None))
+                )
                 built_plan = None
+            else:
+                if built_plan is None:
+                    report.not_built_reasons.append((row["id"], "no stored extraction", None))
         if stored_plan is None or built_plan is None:
             report.not_built += built_plan is None and stored_plan is not None
             for name in FIELDS:
@@ -162,5 +170,8 @@ def render(report: Report) -> str:
     for name in FIELDS:
         c = report.counts[name]
         lines.append(f"{name:<14}{c[SAME]:>6}{c[DIFFERENT]:>11}{c[MISSING]:>9}")
+    for row_id, exc_class, rule in sorted(report.not_built_reasons):
+        detail = f"{exc_class} ({rule})" if rule else exc_class
+        lines.append(f"not built: row {row_id} {detail}")
     lines += [f"different: {name} row {row_id}" for name, row_id in sorted(report.differences)]
     return "\n".join(lines)

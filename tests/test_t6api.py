@@ -18,7 +18,7 @@ from jo_watchdog.adapters.protocols import (
     Matcher,
     ProjectMatcher,
 )
-from jo_watchdog.adapters.t6api import KeyAlreadyHeld, T6Api, T6ApiError
+from jo_watchdog.adapters.t6api import ApiUnreachable, KeyAlreadyHeld, T6Api, T6ApiError
 from jo_watchdog.app.caches import CacheManager, person_from_api
 from jo_watchdog.ledger.db import Ledger
 from tests.fakes import FakeMatcher, resolved
@@ -252,8 +252,59 @@ class FindContactsTests(unittest.IsolatedAsyncioTestCase):
         for answer in (Unavailable("down"), Refused(rule="input", reason="too many")):
             with self.subTest(answer=answer):
                 api = T6Api(FakeClient(person_find=answer))
-                with self.assertRaises(T6ApiError):
+                with self.assertRaises(T6ApiError) as caught:
                     await api.find_contacts(["Ana"])
+                if isinstance(answer, Refused):
+                    self.assertNotIsInstance(caught.exception, ApiUnreachable)
+                    self.assertEqual(caught.exception.rule, answer.rule)
+
+    async def test_a_refused_read_raises_api_unreachable_with_rule(self):
+        api = T6Api(FakeClient(person_find=Refused(rule="read", reason="throttled")))
+        with self.assertRaises(ApiUnreachable) as caught:
+            await api.find_contacts(["Ana"])
+        self.assertEqual(caught.exception.rule, "read")
+
+    async def test_person_find_refused_read_holds_and_retries_next_poll(self):
+        from tests.test_worker_planning import KEY, Harness
+
+        project_ok = Done(
+            result=resolved_project(
+                {"page_id": "proj-mfg", "name": "Manufacturing", "project_code": "MFG"}
+            )
+        )
+        person_ok = Done(
+            result={"results": [found({"page_id": "c-ana", "name": "Anabelle Reyes"})]}
+        )
+
+        # Refused with rule "read": held with 0 attempts, then succeeds on next poll/drain.
+        read_client = FakeClient(
+            person_find=Refused(rule="read", reason="slow read"),
+            project_resolve=project_ok,
+        )
+        h = Harness(self, task="Cut", assignees_raw="Ana")
+        h.caches.matcher = T6Api(read_client)
+        await h.run()
+        row = h.ledger.get_message(KEY)
+        self.assertEqual((row["state"], row["attempts"], row["last_error"]), ("extracted", 0, None))
+        self.assertEqual(h.notion.created, [])
+
+        read_client.answers["person_find"] = person_ok
+        await h.run()
+        row = h.ledger.get_message(KEY)
+        self.assertEqual(row["state"], "done")
+        self.assertEqual(len(h.notion.created), 1)
+
+        # Refused with another rule (e.g. "input"): fails the step as today.
+        input_client = FakeClient(
+            person_find=Refused(rule="input", reason="bad mention"),
+            project_resolve=project_ok,
+        )
+        h_fail = Harness(self, task="Cut", assignees_raw="Ana")
+        h_fail.caches.matcher = T6Api(input_client)
+        await h_fail.run()
+        row_fail = h_fail.ledger.get_message(KEY)
+        self.assertEqual((row_fail["state"], row_fail["attempts"]), ("extracted", 1))
+        self.assertIn("refused (input)", row_fail["last_error"])
 
     async def test_the_seam_satisfies_the_matcher_protocol(self):
         self.assertIsInstance(T6Api(FakeClient()), ContactMatcher)
