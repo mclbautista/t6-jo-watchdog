@@ -152,6 +152,42 @@ class CompareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.not_built, 1)
         self.assertEqual(report.counts["name"], {"same": 0, "different": 0, "missing": 1})
         self.assertEqual(exit_code(report, DEFAULT_MUST_MATCH), 2)  # nothing was compared
+        self.assertIn("not built: row", render(report))
+        self.assertIn("ApiUnreachable", render(report))
+
+    async def test_a_row_whose_build_raises_reports_class_and_rule_without_message_text(self):
+        from jo_watchdog.adapters.t6api import ApiUnreachable, T6ApiError
+
+        cases = [
+            (
+                T6ApiError("secret message text", rule="input"),
+                "T6ApiError (input)",
+                "secret message text",
+            ),
+            (
+                ApiUnreachable("secret read timeout", rule="read"),
+                "ApiUnreachable (read)",
+                "secret read timeout",
+            ),
+            (RuntimeError("raw boom detail"), "RuntimeError", "raw boom detail"),
+        ]
+        for exc, expected_detail, secret in cases:
+            with self.subTest(expected=expected_detail):
+                h = await written(self)
+                row_id = h.ledger.get_message(KEY)["id"]
+
+                async def boom(_inputs, _exc=exc):
+                    raise _exc
+
+                h.notion.preview_job_order = boom
+                report = await self.run_comparison(h)
+                self.assertEqual(report.compared, 0)
+                self.assertEqual(report.not_built, 1)
+                self.assertEqual(report.counts["name"], {"same": 0, "different": 0, "missing": 1})
+                self.assertEqual(exit_code(report, DEFAULT_MUST_MATCH), 2)
+                text = render(report)
+                self.assertIn(f"not built: row {row_id} {expected_detail}", text)
+                self.assertNotIn(secret, text)
 
     async def test_a_row_with_no_stored_plan_is_missing(self):
         h = await written(self)

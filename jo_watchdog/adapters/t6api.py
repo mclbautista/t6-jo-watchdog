@@ -58,9 +58,13 @@ _PLACEHOLDER = re.compile(r"\[[^\]]*\d+\]")
 class T6ApiError(Exception):
     """A t6 API call failed: transport down, refused, an HTTP error, or no answer in time."""
 
+    def __init__(self, *args: object, rule: str | None = None):
+        super().__init__(*args)
+        self.rule = rule
+
 
 class ApiUnreachable(T6ApiError):
-    """No answer: the transport is down or the call timed out. The only error that may wait."""
+    """No answer: transport down, timed out, or a read was refused. The only error that may wait."""
 
 
 class KeyAlreadyHeld(T6ApiError):
@@ -89,8 +93,10 @@ class T6Api:
             raise ApiUnreachable(f"t6 API unavailable: {outcome.reason}")
         if isinstance(outcome, Refused):
             if outcome.rule == "telegram_key":
-                raise KeyAlreadyHeld(f"t6 API refused ({outcome.rule})")
-            raise T6ApiError(f"t6 API refused ({outcome.rule})")
+                raise KeyAlreadyHeld(f"t6 API refused ({outcome.rule})", rule=outcome.rule)
+            if outcome.rule == "read":
+                raise ApiUnreachable(f"t6 API refused ({outcome.rule})", rule=outcome.rule)
+            raise T6ApiError(f"t6 API refused ({outcome.rule})", rule=outcome.rule)
         if not isinstance(outcome, expect):
             want = expect.model_fields["outcome"].default
             raise T6ApiError(f"t6 API answered {outcome.outcome}, want {want}")

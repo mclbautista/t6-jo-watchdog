@@ -636,7 +636,7 @@ class Worker:
             return
         await self._create(msg, plan)
 
-    async def build_plan(self, msg: dict) -> JobOrderPlan | None:
+    async def build_plan(self, msg: dict, *, hold_unreachable: bool = True) -> JobOrderPlan | None:
         """Plan one extracted message: the #21 planner fed by the #22 resolvers.
 
         Without caches nothing is resolved: no relations and no shift deadlines. Contacts and
@@ -666,6 +666,8 @@ class Worker:
                 )
                 project = await caches.resolve_project(header_text, extraction.project_raw)
             except ApiUnreachable as exc:
+                if not hold_unreachable:
+                    raise
                 log.warning("t6 API unreachable for %s; holding: %s", key, type(exc).__name__)
                 return None
             except Exception as exc:  # a refusal or error is a failure: retries, then the alert
@@ -690,6 +692,8 @@ class Worker:
                 )
             )
         except ApiUnreachable as exc:
+            if not hold_unreachable:
+                raise
             log.warning("t6 API unreachable for %s; holding: %s", key, type(exc).__name__)
             return None
         except Exception as exc:  # a refusal or error is a failure: retries, then the alert

@@ -171,9 +171,11 @@ mounts `config.yaml` read-only. Its health check runs `python -m jo_watchdog.app
 
 Classifier, t6 API and ops-post failures are retried at 30 seconds, 2 minutes,
 5 minutes and 10 minutes (longer if the provider sends `Retry-After`); the
-fifth failure gives up. While planning, a message whose t6 API call gets no answer is
+fifth failure gives up. While planning, a message whose t6 API call gets no answer
+or is refused with rule `read` (the API could not read its own source) is
 held and tried again without using up an attempt; `jo raise` is not called until the
-API answers. The message stays queued with its plan, one alert
+API answers. Other refusals (an input or permission rule) fail the step and retry
+as above. The message stays queued with its plan, one alert
 tagged with `owner_telegram_handle` goes to the ops topic, and nothing is
 deleted or half-written. After fixing the cause, make it eligible again:
 
@@ -381,7 +383,9 @@ is the verdict `unavailable` and the message goes on to extraction.
 `compare-raise` replays the last `--last N` (default 50) written messages through the
 `jo raise` preview (never the confirm, so nothing is written) and counts, for each field,
 whether the built value is the same as the one stored at the time. It exits 1 when a field
-named in `--must-match` differs. The report holds counts and ledger row ids, never text.
+named in `--must-match` differs. For each row that could not be built, it prints the
+ledger row id, the exception class and (for an API refusal) the rule. The report holds
+counts, ledger row ids and failure classes, never text.
 
 ```sh
 docker compose exec watchdog python -m jo_watchdog.app compare-raise --last 50 --config /app/config.yaml
