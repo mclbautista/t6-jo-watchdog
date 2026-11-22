@@ -207,16 +207,20 @@ def render_capture_report(
     return "\n".join(lines)
 
 
-def render_edit_after_capture(*, name: str, page_url: str, intake_url: str) -> str:
-    return "\n".join(
-        [
-            EDITED_HEADER,
-            f"<code>{_field(name)}</code>",
-            "",
-            _link("Notion row", page_url),
-            _link("Telegram message", intake_url),
-        ]
-    )
+def render_edit_after_capture(
+    *, name: str, page_url: str, intake_url: str, standing_cc_handle: str | None = None
+) -> str:
+    lines = [
+        EDITED_HEADER,
+        f"<code>{_field(name)}</code>",
+        "",
+        _link("Notion row", page_url),
+        _link("Telegram message", intake_url),
+    ]
+    mention = handle_mention(standing_cc_handle)
+    if mention:
+        lines += ["", mention]
+    return "\n".join(lines)
 
 
 def render_stale_cache(

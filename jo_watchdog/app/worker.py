@@ -343,6 +343,7 @@ class Worker:
                 intake_url=intake_link(
                     msg["chat_id"], self.config.intake_topic_id, msg["message_id"]
                 ),
+                standing_cc_handle=self.config.standing_cc_telegram_handle,
             ),
         )
 
