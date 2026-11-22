@@ -247,7 +247,13 @@ restarts.
 | created_at   | TEXT    | ISO-8601 UTC                                             |
 
 Every heartbeat figure is a query over `messages`, `ignore_log`, `outbox`,
-`stage_results` and `llm_calls` for that window; there are no counters.
+`stage_results` and `llm_calls`; there are no counters. Activity metrics
+(`captured`, `flagged`, `ignored`, `no_text`, `reaction_failed`, deliverables,
+and model changes) cover `[window_start, window_end)`. In contrast, the queue
+counts (`stuck`, `pending_retry`, `ops_failed`) are current snapshots at query
+time; `stuck` and `pending_retry` count nonterminal messages only (excluding
+`done` and `ignored`), even when historical `exhausted_at` or `attempts`
+metadata remains on a manually resolved row.
 "Captured" is a message in `written` or `done` whose immutable `written_at`
 falls in the window, so a reaction retry or restart recovery after 07:00 never
 moves a capture into the next window. "Flagged" is the captured subset with

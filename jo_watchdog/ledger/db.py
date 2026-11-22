@@ -32,7 +32,9 @@ from jo_watchdog.ledger.migrations import (
     MIGRATIONS,
     REBUILDS_TABLES,
 )
-from jo_watchdog.ledger.states import State, can_transition
+from jo_watchdog.ledger.states import TERMINAL_STATES, State, can_transition
+
+_TERMINAL_STATE_VALUES = tuple(state.value for state in TERMINAL_STATES)
 
 CACHE_SNAPSHOTS_KEPT = 10
 
@@ -863,11 +865,19 @@ class Ledger:
     def heartbeat_stats(self, window_start: datetime, window_end: datetime) -> dict:
         """Everything the heartbeat reports, straight from ledger rows (no counters).
 
-        A capture belongs to the window holding its immutable ``written_at``
-        (set once by ``mark_written``), so a reaction or ``done`` landing after
-        the boundary never moves it. Rows written before migration 8 have no
-        ``written_at``; they fall back to ``updated_at`` at query time, which is
-        never stored as a capture time.
+        Activity figures (``captured``, ``flagged``, ``ignored``, ``no_text``,
+        ``reaction_failed``, ``deliverables``, ``models``) cover
+        ``[window_start, window_end)``. A capture belongs to the window holding
+        its immutable ``written_at`` (set once by ``mark_written``), so a reaction
+        or ``done`` landing after the boundary never moves it. Rows written before
+        migration 8 have no ``written_at``; they fall back to ``updated_at`` at
+        query time, which is never stored as a capture time.
+
+        Queue figures (``stuck``, ``pending_retry``, ``ops_failed``) are current
+        snapshots at query time, not window-scoped. ``stuck`` and
+        ``pending_retry`` count nonterminal messages only (excluding ``done`` and
+        ``ignored``), even if historical ``exhausted_at`` or ``attempts`` values
+        remain on a resolved row.
         """
         start, end = fmt_utc(window_start), fmt_utc(window_end)
         one = lambda sql, *args: self._conn.execute(sql, args).fetchone()[0]  # noqa: E731
@@ -922,9 +932,15 @@ class Ledger:
                 end,
             ),
             "deliverables": deliverables,
-            "stuck": one("SELECT COUNT(*) FROM messages WHERE exhausted_at IS NOT NULL"),
+            "stuck": one(
+                "SELECT COUNT(*) FROM messages"
+                " WHERE exhausted_at IS NOT NULL AND state NOT IN (?, ?)",
+                *_TERMINAL_STATE_VALUES,
+            ),
             "pending_retry": one(
-                "SELECT COUNT(*) FROM messages WHERE attempts > 0 AND exhausted_at IS NULL"
+                "SELECT COUNT(*) FROM messages"
+                " WHERE attempts > 0 AND exhausted_at IS NULL AND state NOT IN (?, ?)",
+                *_TERMINAL_STATE_VALUES,
             ),
             "ops_failed": one("SELECT COUNT(*) FROM outbox WHERE state = 'failed'"),
             "models": models,
