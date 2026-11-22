@@ -111,7 +111,7 @@ NOTION_READ_BACK = "Notion read-back"
 NOTION_RECONCILIATION = "Notion reconciliation"
 PLANNING = "Planning"
 # How long the page of a raised Job Order is waited for between polls of ``jo get``.
-RAISE_POLL_INTERVAL = 2.0
+RAISE_POLL_INTERVAL = 0.5
 _TRACE_FIELDS = (
     "requested_model",
     "returned_model",
