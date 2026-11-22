@@ -77,6 +77,9 @@ class T6Api:
     def __init__(self, client: Client, *, call_timeout: float = CALL_TIMEOUT_SECONDS):
         self._client = client
         self._call_timeout = call_timeout
+        # The ``job_order`` that ``job_order_page`` saw with its page, kept for the one
+        # read-back that follows, so that read-back needs no second ``jo get`` (#171).
+        self._polled: dict[str, dict[str, Any]] = {}
 
     async def _call(
         self, method: Callable[[Any], Any], inputs: Any, *, expect: type = Done
@@ -219,9 +222,17 @@ class T6Api:
         return result["jo_id"]
 
     async def job_order_page(self, jo_id: str) -> str | None:
-        """``jo get`` by T6 Job Order ID: the page ID once the page exists, else None."""
+        """``jo get`` by T6 Job Order ID: the page ID once the page exists, else None.
+
+        The answer with a page is the whole Job Order, read live; ``read_job_order`` takes it
+        once instead of asking again.
+        """
         result = await self._call(self._client.jo_get, JoGetInput(ref=jo_id))
-        return result["job_order"].get("page_id") or None
+        order = result["job_order"]
+        page_id = order.get("page_id") or None
+        if page_id:
+            self._polled[page_id] = order
+        return page_id
 
     async def find_job_orders(self, chat_id: int, message_id: int) -> list[PageRef]:
         """``jo find`` by chat and message ID: Job Orders raised from this message, oldest first."""
@@ -235,7 +246,13 @@ class T6Api:
         ]
 
     async def read_job_order(self, page_id: str) -> dict[str, Any]:
-        """``jo get`` by page ID: the ``job_order`` dict (name, telegram_key, date, deadline)."""
+        """``jo get`` by page ID: the ``job_order`` dict (name, telegram_key, date, deadline).
+
+        Right after ``job_order_page`` found this page, its answer is used once instead.
+        """
+        polled = self._polled.pop(page_id, None)
+        if polled is not None:
+            return polled
         return (await self._call(self._client.jo_get, JoGetInput(ref=page_id)))["job_order"]
 
 
