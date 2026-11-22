@@ -403,6 +403,12 @@ MIGRATION_14 = [
     " WHERE jo_key GLOB '????????-????-????-????-????????????|*'",
 ]
 
+# The full text of ignored messages (#164), so the heartbeat can show what was ignored. Nullable,
+# so the prior release still opens the ledger; older rows keep only their first line.
+MIGRATION_15 = [
+    "ALTER TABLE ignore_log ADD COLUMN text TEXT",
+]
+
 Migration = list[str] | Callable[[sqlite3.Connection], None]
 
 # Keyed by number and applied in ascending order of the numbers not yet recorded.
@@ -421,6 +427,7 @@ MIGRATIONS: dict[int, Migration] = {
     12: MIGRATION_12,
     13: MIGRATION_13,
     14: MIGRATION_14,
+    15: MIGRATION_15,
 }
 
 # Migrations that rebuild a referenced table run with foreign-key enforcement off.

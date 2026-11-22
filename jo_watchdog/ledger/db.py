@@ -37,6 +37,10 @@ from jo_watchdog.ledger.states import State, can_transition
 CACHE_SNAPSHOTS_KEPT = 10
 
 
+# How much of an ignored message the heartbeat may show, so a long one cannot push it past Telegram's limit.
+IGNORED_TEXT_LIMIT = 200
+
+
 def telegram_key(chat_id: int, message_id: int) -> str:
     """The ledger's own row key, ``<chat_id>:<message_id>`` (the same format as before)."""
     return f"{chat_id}:{message_id}"
@@ -573,14 +577,15 @@ class Ledger:
         )
         self._conn.execute(
             "INSERT INTO ignore_log"
-            " (chat_id, message_id, update_id, reason, first_line, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            " (chat_id, message_id, update_id, reason, first_line, text, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 row["chat_id"],
                 row["message_id"],
                 row["update_id"],
                 reason,
                 row["first_line"],
+                row["text"],
                 now,
             ),
         )
@@ -902,10 +907,12 @@ class Ledger:
             ),
             "ignored": one(f"SELECT COUNT(*) {ignored}", "not_jo", start, end),
             "no_text": one(f"SELECT COUNT(*) {ignored}", "no_text", start, end),
-            "ignored_message_ids": [
+            "ignored_texts": [
                 r[0]
                 for r in self._conn.execute(
-                    f"SELECT message_id {ignored} ORDER BY id DESC LIMIT 5", ("not_jo", start, end)
+                    "SELECT SUBSTR(COALESCE(NULLIF(text, ''), first_line), 1, ?)"
+                    f" {ignored} ORDER BY id DESC LIMIT 5",
+                    (IGNORED_TEXT_LIMIT, "not_jo", start, end),
                 )
             ],
             "reaction_failed": one(
@@ -933,9 +940,12 @@ class Ledger:
         reason: str,
         first_line: str,
         *,
+        text: str | None = None,
         alert: OutboxMessage | None = None,
     ) -> None:
         """Record out-of-scope traffic and advance the offset past it.
+
+        ``text`` is the whole message, kept beside its first line (#164).
 
         ``alert`` (a message id gap this update revealed, #101) is queued in the
         same transaction.
@@ -945,9 +955,9 @@ class Ledger:
         with self._transaction():
             self._conn.execute(
                 "INSERT INTO ignore_log"
-                " (chat_id, message_id, update_id, reason, first_line, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (chat_id, message_id, update_id, reason, first_line, _now()),
+                " (chat_id, message_id, update_id, reason, first_line, text, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (chat_id, message_id, update_id, reason, first_line, text, _now()),
             )
             if alert is not None:
                 self._insert_outbox(alert, message_row_id=None, now=_now())

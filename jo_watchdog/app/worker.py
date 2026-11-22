@@ -239,6 +239,7 @@ class Worker:
                     u.update_id,
                     self._scope_reason(u),
                     first_line_of(u.text),
+                    text=u.text,
                     alert=None if u.edited else self._gap_alert(u),
                 )
                 continue
@@ -312,7 +313,12 @@ class Worker:
         action = decide_edit(msg["state"] if msg else None)
         if action is EditAction.UNKNOWN:
             self.ledger.ignore(
-                u.chat_id, u.message_id, u.update_id, action.value, first_line_of(u.text)
+                u.chat_id,
+                u.message_id,
+                u.update_id,
+                action.value,
+                first_line_of(u.text),
+                text=u.text,
             )
             return
         report = None
@@ -1320,7 +1326,7 @@ class Worker:
 
     # -- daily heartbeat (#25) -----------------------------------------------
 
-    def enqueue_heartbeat_if_due(self) -> bool:
+    async def enqueue_heartbeat_if_due(self) -> bool:
         """Queue the heartbeat for the latest 07:00 window, once per window."""
         start, end = heartbeat_window(
             self.clock(), self.config.heartbeat_time, ZoneInfo(self.config.timezone)
@@ -1333,10 +1339,14 @@ class Worker:
             self.ledger.skip_heartbeat(start, end)
             return False
         last = self.ledger.previous_heartbeat(start)
+        stats = self.ledger.heartbeat_stats(start, end)
+        # The ignored messages are raw text: withheld like every other text sent to ops. If that
+        # fails, nothing is queued and the next cycle tries again.
+        stats["ignored_texts"] = await self._withheld(stats["ignored_texts"])
         text = render_heartbeat(
             window_start=start,
             window_end=end,
-            stats=self.ledger.heartbeat_stats(start, end),
+            stats=stats,
             previous=(
                 datetime.fromisoformat(last["window_end"]),
                 intake_link(last["chat_id"], last["topic_id"], last["telegram_message_id"]),
@@ -1370,7 +1380,7 @@ class Worker:
             except Exception:
                 log.exception("could not resolve accepted ops posts")
             try:
-                self.enqueue_heartbeat_if_due()
+                await self.enqueue_heartbeat_if_due()
             except Exception:
                 log.exception("could not queue the daily heartbeat")
             # A capture stuck on a failing dependency must not starve ops posts.
