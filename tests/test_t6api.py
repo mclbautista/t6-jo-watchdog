@@ -188,6 +188,21 @@ class RaiseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await T6Api(client).job_order_page("t6j_1"), expected)
             self.assertEqual(client.inputs["jo_get"].ref, "t6j_1")
 
+    async def test_the_read_back_after_the_poll_reuses_the_poll_answer_once(self):
+        order = {"page_id": "p-1", "name": "N", "telegram_key": "-100:7", "date": None}
+        calls = []
+
+        def answer():
+            calls.append(1)
+            return Done(result={"job_order": order})
+
+        api = T6Api(FakeClient(jo_get=answer))
+        self.assertEqual(await api.job_order_page("t6j_1"), "p-1")
+        self.assertEqual(await api.read_job_order("p-1"), order)
+        self.assertEqual(len(calls), 1)
+        await api.read_job_order("p-1")
+        self.assertEqual(len(calls), 2)
+
     async def test_an_outage_on_preview_or_confirm_is_one_error(self):
         for answer in (Unavailable("connection refused"), APIError("API returned HTTP 503", 503)):
             api = T6Api(FakeClient(jo_raise=answer))
