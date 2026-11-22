@@ -126,19 +126,23 @@ class MentionSplittingTests(unittest.TestCase):
         "for @user_one  thank youuu": ["@user_one"],
         "@user_eight thankies!!": ["@user_eight"],
         "@user_two tyvmmmm": ["@user_two"],
-        "ate Nina thank u!": ["ate Nina"],
+        "ate Nina thank u!": ["Nina"],
         "Lena po": ["Lena"],
         "Mira / @user_two kung sakaling umabot kay user_two": [
             "Mira",
             "@user_two kung sakaling umabot kay user_two",
         ],
         "ate Lena / Ramon, if abutin the next day": [
-            "ate Lena",
+            "Lena",
             "Ramon if abutin the next day",
         ],
         "Ramon @user_two // @user_three": ["Ramon", "@user_two", "@user_three"],
         "@user_three  @user_one": ["@user_three", "@user_one"],
-        "ate @user_four / Ramon": ["ate", "@user_four", "Ramon"],
+        "ate @user_four / Ramon": ["@user_four", "Ramon"],
+        "Kuya. Ramon @user_two": ["Ramon", "@user_two"],
+        "Atty Mira / Engr. Lena": ["Mira", "Lena"],
+        "ate": ["ate"],
+        "Ate.": ["Ate."],
         "Ramon but maybe Lena": ["Ramon but maybe Lena"],
         "": [],
     }
@@ -237,7 +241,7 @@ class PeopleResolutionTests(ResolvedBy):
 
     async def test_unconditional_mentions_beside_a_conditional_one_still_resolve(self):
         out = await self.resolve("ate Lena / Ramon, if abutin the next day")
-        self.assertEqual(self.matcher.calls, [["ate Lena", "ate", "Lena"]])
+        self.assertEqual(self.matcher.calls, [["Lena"]])  # never "ate" as a person of its own
         self.assertEqual(out.assigned, [LENA])
         self.assertEqual(out.findings[0].params["raw"], "Ramon if abutin the next day")
 
@@ -250,12 +254,13 @@ class PeopleResolutionTests(ResolvedBy):
         self.assertEqual(out.assigned, [])
         self.assertEqual(out.findings[0].params["raw"], "Mira Zzyzx")
 
-    async def test_a_title_before_a_handle_belongs_to_the_handle(self):
+    async def test_a_title_before_a_handle_is_dropped_and_never_asked_for(self):
         out = await self.resolve("ate @user_four / Ramon")
-        self.assertEqual(self.matcher.calls[0][:3], ["ate", "@user_four", "Ramon"])
+        self.assertEqual(self.matcher.calls[0][:2], ["@user_four", "Ramon"])
+        self.assertNotIn("ate", self.matcher.calls[0])
         self.assertEqual(out.assigned, [JASON, RAMON])
         self.assertEqual(out.findings, [])
-        self.assertEqual(out.mentions[0].raw, "ate @user_four")
+        self.assertEqual(out.mentions[0].raw, "@user_four")
 
     async def test_a_known_name_before_a_handle_is_its_own_person(self):
         out = await self.resolve("Ramon @user_two")
@@ -263,7 +268,7 @@ class PeopleResolutionTests(ResolvedBy):
 
     async def test_an_unknown_title_and_handle_make_one_unresolved_mention(self):
         out = await self.resolve("ate @nobody")
-        self.assertEqual([(m.raw, m.status) for m in out.mentions], [("ate @nobody", "unresolved")])
+        self.assertEqual([(m.raw, m.status) for m in out.mentions], [("@nobody", "unresolved")])
 
     async def test_assignees_go_to_the_api_as_t6_person_ids(self):
         self.matcher.contacts["ramon"] = resolved(RAMON, "Ramon Reyes", t6_id="t6n_ramon")
