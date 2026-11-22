@@ -435,9 +435,9 @@ def render_heartbeat(
     ]
     for old, new in stats["models"].values():
         lines.append(f"Model changed: {_field(old)} → {_field(new)}")
-    if stats["ignored_message_ids"]:
-        lines += ["", "Ignored, message ids:"]
-        lines += [f"{_field(message_id)}" for message_id in stats["ignored_message_ids"]]
+    if stats["ignored_texts"]:
+        lines += ["", "Ignored, messages:"]
+        lines += [_field(text) for text in stats["ignored_texts"]]
     return "\n".join(lines)
 
 

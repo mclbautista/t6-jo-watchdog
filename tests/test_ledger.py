@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from jo_watchdog.ledger.db import Ledger
+from jo_watchdog.ledger.db import Ledger, telegram_key
 from jo_watchdog.ledger.migrations import MIGRATION_1, MIGRATION_2, MIGRATIONS
 from jo_watchdog.ledger.states import State
 
@@ -163,6 +163,19 @@ class IgnoreLogTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual((row["reason"], row["first_line"]), ("out_of_scope_topic", "chatter"))
         self.assertEqual(self.ledger.last_committed_offset(), 3)
+
+    def test_ignore_keeps_the_full_text_beside_the_first_line(self):
+        self.ledger.ignore(-100999, 5, 3, "not_jo", "chatter", text="chatter\nsecond line")
+        self.ledger.ignore(-100999, 6, 4, "no_text", "")
+        rows = self.ledger._conn.execute("SELECT first_line, text FROM ignore_log ORDER BY id").fetchall()
+        self.assertEqual([tuple(r) for r in rows], [("chatter", "chatter\nsecond line"), ("", None)])
+
+    def test_a_message_the_pipeline_ignores_keeps_its_full_text(self):
+        self.ledger.accept_message(-100123, 42, 7, "{}", "line one\nline two", "line one")
+        row = self.ledger.get_message(telegram_key(-100123, 42))
+        self.ledger._log_ignored(row, "not_jo", "2026-10-21T00:00:00Z")
+        stored = self.ledger._conn.execute("SELECT first_line, text FROM ignore_log").fetchone()
+        self.assertEqual(tuple(stored), ("line one", "line one\nline two"))
 
     def test_ignore_leaves_no_message_row(self):
         self.ledger.ignore(-100999, 5, 3, "no_text", "")

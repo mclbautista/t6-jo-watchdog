@@ -595,11 +595,51 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
                     "",
                     "Queue: 0 stuck, 0 pending retry, 0 ops posts failed",
                     "",
-                    "Ignored, message ids:",
-                    "13",
+                    "Ignored, messages:",
+                    "lunch at noon?",
                 ]
             ),
         )
+
+    def credential_day(self, text):
+        updates, classifier = self.day_one()
+        updates[2] = update(3, message_id=13, text=text)
+        return updates, classifier
+
+    async def test_heartbeat_shows_the_ignored_text_withheld_not_bare_ids(self):
+        updates, classifier = self.credential_day("Password: hunter22 lunch at noon?")
+        p = Pipeline(self, updates, classifier=classifier)
+        await p.worker.run_once()
+        p.clock.advance(hours=24)
+        await p.worker.run_once()
+        (row,) = p.outbox("heartbeat")
+        self.assertIn("Ignored, messages:\nPassword: [withheld] lunch at noon?", row["text"])
+        self.assertNotIn("hunter22", row["text"])
+        self.assertNotIn("message ids", row["text"])
+
+    async def test_a_long_ignored_text_is_cut_to_fit_the_heartbeat(self):
+        updates, classifier = self.credential_day("chatter " * 100)
+        p = Pipeline(self, updates, classifier=classifier)
+        await p.worker.run_once()
+        p.clock.advance(hours=24)
+        await p.worker.run_once()
+        (row,) = p.outbox("heartbeat")
+        (shown,) = [line for line in row["text"].splitlines() if line.startswith("chatter")]
+        self.assertLessEqual(len(shown), 200)
+
+    async def test_the_heartbeat_waits_while_the_text_cannot_be_withheld(self):
+        updates, classifier = self.day_one()
+        notion = FakeJobOrders()
+        p = Pipeline(self, updates, classifier=classifier, notion=notion)
+        await p.worker.run_once()
+        p.clock.advance(hours=24)
+        notion.withhold_down = RuntimeError("t6 API unavailable")
+        await p.worker.run_once()
+        self.assertEqual(p.outbox("heartbeat"), [])  # never sent with the raw text
+        notion.withhold_down = None
+        await p.worker.run_once()
+        (row,) = p.outbox("heartbeat")
+        self.assertIn("lunch at noon?", row["text"])
 
     async def test_heartbeat_is_sent_once_per_window_even_across_restarts(self):
         p = Pipeline(self)
