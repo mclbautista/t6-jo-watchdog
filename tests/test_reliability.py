@@ -721,6 +721,78 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
             (stats["stuck"], stats["pending_retry"], stats["ops_failed"]), (1, 1, 1)
         )
 
+    async def test_terminal_messages_with_historical_exhaustion_or_attempts_do_not_count_in_queue(
+        self,
+    ):
+        notion = FakeJobOrders(fail_create=True)
+        updates = [jo(1, 41), jo(2, 42), jo(3, 43), jo(4, 44), jo(5, 45), jo(6, 46)]
+        p = Pipeline(self, updates, notion=notion)
+        await p.worker.run_once()
+        # 41: active exhausted (nonterminal 'writing'); 42: active retryable ('writing', attempts=1)
+        # 43: ignored with historical exhaustion; 44: done with historical exhaustion
+        # 45: ignored with prior attempts; 46: done with prior attempts
+        conn = p.ledger._conn
+        conn.execute(
+            "UPDATE messages SET exhausted_at = '2026-10-22T01:00:00Z', attempts = 5"
+            " WHERE message_id = 41"
+        )
+        conn.execute(
+            "UPDATE messages SET state = 'ignored', exhausted_at = '2026-10-22T01:00:00Z',"
+            " attempts = 5, last_error = 'outage' WHERE message_id = 43"
+        )
+        conn.execute(
+            "UPDATE messages SET state = 'done', exhausted_at = '2026-10-22T01:00:00Z',"
+            " attempts = 5, last_error = 'outage' WHERE message_id = 44"
+        )
+        conn.execute(
+            "UPDATE messages SET state = 'ignored', attempts = 3 WHERE message_id = 45"
+        )
+        conn.execute(
+            "UPDATE messages SET state = 'done', attempts = 2 WHERE message_id = 46"
+        )
+
+        stats = p.ledger.heartbeat_stats(
+            p.clock() - timedelta(days=1), p.clock() + timedelta(days=1)
+        )
+        self.assertEqual((stats["stuck"], stats["pending_retry"]), (1, 1))
+        # Historical metadata on terminal rows is preserved untouched.
+        ignored = p.ledger.get_message("-100123:43")
+        self.assertEqual(
+            (ignored["state"], ignored["exhausted_at"], ignored["attempts"], ignored["last_error"]),
+            ("ignored", "2026-10-22T01:00:00Z", 5, "outage"),
+        )
+
+    async def test_manual_resolution_of_exhausted_message_clears_heartbeat_stuck(self):
+        notion = FakeJobOrders(fail_create=True)
+        p = Pipeline(self, [jo(1, 42)], notion=notion)
+        for delay in (30, 120, 300, 600):
+            await p.worker.run_once()
+            p.clock.advance(seconds=delay)
+        await p.worker.run_once()  # 5th failure sets exhausted_at
+        before = p.message()
+        self.assertEqual((before["state"], before["attempts"]), ("writing", 5))
+        self.assertIsNotNone(before["exhausted_at"])
+
+        # Manual outage resolution moves the row to terminal 'ignored', keeping exhaustion history.
+        p.ledger._conn.execute(
+            "UPDATE messages SET state = 'ignored', ignore_reason = 'manual_outage_resolved'"
+            " WHERE telegram_key = ?",
+            (KEY,),
+        )
+        notion.fail_create = False
+        # Consecutive heartbeats report 0 stuck and 0 pending retry, and never replay the row.
+        for day in (1, 2):
+            p.clock.advance(hours=24)
+            await p.worker.run_once()
+            row = p.outbox("heartbeat")[day - 1]
+            self.assertIn("Queue: 0 stuck, 0 pending retry, 0 ops posts failed", row["text"])
+        after = p.message()
+        self.assertEqual(
+            (after["state"], after["exhausted_at"], after["attempts"], after["last_error"]),
+            ("ignored", before["exhausted_at"], 5, before["last_error"]),
+        )
+        self.assertEqual(notion.pages, {})
+
     async def test_model_change_line_only_when_the_returned_model_changed(self):
         def result(model):
             r = ok_result(title="T", task="t")

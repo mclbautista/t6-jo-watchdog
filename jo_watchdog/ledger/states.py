@@ -21,6 +21,9 @@ class State(str, Enum):
     IGNORED = "ignored"
 
 
+TERMINAL_STATES = (State.DONE, State.IGNORED)
+
+
 # Transitions allowed by the state machine.
 _TRANSITIONS = {
     State.RECEIVED: {State.EXTRACTED, State.IGNORED},
