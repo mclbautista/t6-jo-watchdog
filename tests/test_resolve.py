@@ -22,6 +22,7 @@ from jo_watchdog.core.resolve import (
     gather_cc_raw,
     relation_properties,
     resolve_project,
+    split_inline_cc,
     split_mentions,
 )
 from jo_watchdog.ledger.db import Ledger
@@ -120,6 +121,14 @@ class GatherCcTests(unittest.TestCase):
         text = "JO #1\nAssigned: Ramon\nNotes: ask Lena"
         self.assertEqual(gather_cc_raw(text, None), None)
         self.assertEqual(gather_cc_raw(text, "@priya"), "@priya")
+
+    def test_a_cc_written_on_the_assigned_line_is_split_off(self):
+        self.assertEqual(
+            split_inline_cc("@joshua0826 cc @mclb22 @pio_mayuga"),
+            ("@joshua0826", "@mclb22 @pio_mayuga"),
+        )
+        self.assertEqual(split_inline_cc("Ramon, Lena"), ("Ramon, Lena", None))
+        self.assertEqual(split_inline_cc(None), (None, None))
 
     def test_an_empty_cc_label_is_not_a_value(self):
         self.assertEqual(gather_cc_raw("cc:\nTask: x", None), None)
