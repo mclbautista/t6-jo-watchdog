@@ -79,7 +79,7 @@ from jo_watchdog.core.report import (
     render_outage_alert,
     render_stale_cache,
 )
-from jo_watchdog.core.resolve import mention_entities
+from jo_watchdog.core.resolve import gather_cc_raw, mention_entities
 from jo_watchdog.core.safe_error import describe
 from jo_watchdog.core.verify import (
     MANILA,
@@ -669,7 +669,9 @@ class Worker:
         if caches is not None:
             try:
                 people = await caches.resolve_people(
-                    extraction.assignees_raw, extraction.cc_raw, mention_entities(message)
+                    extraction.assignees_raw,
+                    gather_cc_raw(msg["text"], extraction.cc_raw),
+                    mention_entities(message),
                 )
                 project = await caches.resolve_project(header_text, extraction.project_raw)
             except ApiUnreachable as exc:

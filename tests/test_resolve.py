@@ -19,6 +19,7 @@ from jo_watchdog.core.resolve import (
     PeopleResolution,
     ProjectMatch,
     ProjectResolution,
+    gather_cc_raw,
     relation_properties,
     resolve_project,
     split_mentions,
@@ -102,6 +103,26 @@ class ResolvedBy(unittest.IsolatedAsyncioTestCase):
 
     async def resolve(self, assignees, cc=None, entities=()) -> PeopleResolution:
         return await self.caches.resolve_people(assignees, cc, list(entities))
+
+
+class GatherCcTests(unittest.TestCase):
+    def test_several_cc_lines_are_all_gathered(self):
+        text = "JO #1\nAssigned: Ramon\ncc: @priya\nTask: edit\nCC Lena\ncc: Mira, Paul"
+        gathered = gather_cc_raw(text, "@priya")
+        self.assertEqual(gathered, "@priya\nLena\nMira, Paul")
+        self.assertEqual(split_mentions(gathered), ["@priya", "Lena", "Mira", "Paul"])
+
+    def test_a_name_in_the_body_is_not_a_cc(self):
+        text = "JO #1\nAssigned: Ramon\nNotes: please check with Lena\nPlease cc Nina on the cut\ncc: @priya"
+        self.assertEqual(gather_cc_raw(text, "@priya Lena"), "@priya")
+
+    def test_no_cc_line_keeps_the_extracted_value(self):
+        text = "JO #1\nAssigned: Ramon\nNotes: ask Lena"
+        self.assertEqual(gather_cc_raw(text, None), None)
+        self.assertEqual(gather_cc_raw(text, "@priya"), "@priya")
+
+    def test_an_empty_cc_label_is_not_a_value(self):
+        self.assertEqual(gather_cc_raw("cc:\nTask: x", None), None)
 
 
 class FixtureParsingTests(unittest.TestCase):
@@ -215,6 +236,14 @@ class PeopleResolutionTests(ResolvedBy):
     async def test_standing_cc_not_duplicated_when_named(self):
         out = await self.resolve("Lena", "@priya, @user_six")
         self.assertEqual(out.cc, [PRIYA, LARA])
+
+    async def test_every_gathered_cc_lands_and_a_miss_stays_a_finding(self):
+        cc = gather_cc_raw("Assigned: Lena\ncc: @priya\ncc: @nobody\ncc: @user_six", "@priya")
+        out = await self.resolve("Lena", cc)
+        self.assertEqual(out.cc, [PRIYA, LARA])
+        self.assertEqual(
+            [(f.code, f.params["raw"]) for f in out.findings], [("unresolved_person", "@nobody")]
+        )
 
     async def test_a_hedged_mention_is_ambiguous_and_never_sent(self):
         out = await self.resolve("Ramon but maybe Lena / Kim", "@nobody")
