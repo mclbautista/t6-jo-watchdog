@@ -126,6 +126,34 @@ def _strip_courtesy(segment: str) -> str:
         text = text[: m.start()].strip()
 
 
+_CC_LINE_RE = re.compile(r"^[ \t]*cc\b(?::[ \t]*|[ \t]+)(\S.*)$", re.IGNORECASE | re.MULTILINE)
+
+
+_INLINE_CC_RE = re.compile(r"\bcc\b[ \t]*:?[ \t]*", re.IGNORECASE)
+
+
+def split_inline_cc(assignees_raw: str | None) -> tuple[str | None, str | None]:
+    """``@a cc @b @c`` written on the Assigned line -> (``@a``, ``@b @c``): the cc is not assigned."""
+    if not assignees_raw:
+        return assignees_raw, None
+    m = _INLINE_CC_RE.search(assignees_raw)
+    if not m:
+        return assignees_raw, None
+    head, tail = assignees_raw[: m.start()].strip(), assignees_raw[m.end() :].strip()
+    return head or None, tail or None
+
+
+def gather_cc_raw(text: str | None, extracted: str | None) -> str | None:
+    """The cc value to resolve: every ``cc`` line of the posted text, else the extracted one.
+
+    The extractor returns one string, so with several ``cc`` lines it can keep one of them or
+    pick up a person named in the body. A line that begins with the ``cc`` label is the poster's
+    own cc; when there is any, they are all gathered and the extracted value is not used.
+    """
+    values = [m.group(1).strip() for m in _CC_LINE_RE.finditer(text or "")]
+    return "\n".join(values) if values else extracted
+
+
 def _pieces(raw: str | None) -> list[tuple[str, bool]]:
     """Each mention of an ``assignees_raw``/``cc_raw`` value, with its lead flag.
 
