@@ -124,8 +124,8 @@ class GatherCcTests(unittest.TestCase):
 
     def test_a_cc_written_on_the_assigned_line_is_split_off(self):
         self.assertEqual(
-            split_inline_cc("@joshua0826 cc @mclb22 @pio_mayuga"),
-            ("@joshua0826", "@mclb22 @pio_mayuga"),
+            split_inline_cc("@user_one cc @user_two @user_three"),
+            ("@user_one", "@user_two @user_three"),
         )
         self.assertEqual(split_inline_cc("Ramon, Lena"), ("Ramon, Lena", None))
         self.assertEqual(split_inline_cc(None), (None, None))
